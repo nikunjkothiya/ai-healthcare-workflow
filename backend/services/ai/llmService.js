@@ -11,14 +11,14 @@ const NON_SPEECH_ARTIFACT_REGEX = /\[(?:BLANK_AUDIO|SILENCE|NO_SPEECH|MUSIC)\]|\
 
 class LLMService {
   constructor() {
-    this.ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
-    this.model = String(process.env.LLM_MODEL || 'qwen2.5:3b-instruct-q4_K_M').trim();
-    this.chatModel = String(process.env.LLM_MODEL_CHAT || this.model).trim();
-    this.analysisModel = String(process.env.LLM_MODEL_ANALYSIS || 'qwen2.5:7b-instruct-q4_K_M').trim();
-    this.decisionModel = String(process.env.LLM_MODEL_DECISION || this.chatModel).trim();
+    this.ollamaUrl = process.env.OLLAMA_URL || 'http://ollama:11434';
+    // Model tags are managed internally; .env only provides local GGUF file paths.
+    this.model = 'healthcare-base';
+    this.chatModel = 'healthcare-chat';
+    this.analysisModel = 'healthcare-analysis';
+    this.decisionModel = 'healthcare-decision';
     this.analysisNumCtx = parseInt(process.env.LLM_NUM_CTX_ANALYSIS, 10) || 8192;
     this.analysisMaxTokens = parseInt(process.env.LLM_MAX_TOKENS_ANALYSIS, 10) || 1200;
-    this.autoPullModels = String(process.env.LLM_AUTO_PULL_MODELS || 'false').toLowerCase() === 'true';
     this.maxRetries = 2;
     this.retryDelayMs = 1500;
     this.available = null; // null = unknown, true/false = checked
@@ -69,12 +69,8 @@ class LLMService {
   }
 
   _validateModelConfig() {
-    if (!this.model) {
-      return 'LLM_MODEL is required. Set model names in environment variables.';
-    }
-
-    if (!this.chatModel || !this.analysisModel || !this.decisionModel) {
-      return 'LLM_MODEL_CHAT, LLM_MODEL_ANALYSIS, and LLM_MODEL_DECISION must resolve to non-empty model names.';
+    if (!this.model || !this.chatModel || !this.analysisModel || !this.decisionModel) {
+      return 'Internal Ollama model tags are not configured.';
     }
 
     const requiredModels = this._requiredModels();
@@ -116,21 +112,7 @@ class LLMService {
 
         console.warn(`LLM: Model "${requiredModel}" not found in Ollama. Available:`,
           availableModelNames.join(', ') || 'none');
-        if (!this.autoPullModels) {
-          missingModels.push(requiredModel);
-          continue;
-        }
-
-        console.log(`LLM: Attempting to pull "${requiredModel}"...`);
-
-        try {
-          await axios.post(`${this.ollamaUrl}/api/pull`, { name: requiredModel }, { timeout: 120000 });
-          console.log(`LLM: Successfully pulled "${requiredModel}"`);
-          availableModelNames.push(this._normalizeModelName(requiredModel));
-        } catch (pullErr) {
-          missingModels.push(requiredModel);
-          console.warn(`LLM: Failed to pull model "${requiredModel}": ${pullErr.message}`);
-        }
+        missingModels.push(requiredModel);
       }
 
       this.available = missingModels.length === 0;

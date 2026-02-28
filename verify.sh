@@ -113,7 +113,7 @@ section "LAYER 1: Infrastructure & Services"
 info "Checking Docker services..."
 
 # Check each service
-SERVICES=("healthcare_db" "healthcare_redis" "healthcare_backend" "healthcare_worker" "healthcare_frontend" "healthcare_whisper" "healthcare_tts")
+SERVICES=("healthcare_db" "healthcare_redis" "healthcare_ollama" "healthcare_backend" "healthcare_worker" "healthcare_frontend" "healthcare_whisper" "healthcare_tts")
 
 for service in "${SERVICES[@]}"; do
     if docker ps | grep -q "$service"; then
@@ -147,54 +147,26 @@ else
     error "Redis connection failed"
 fi
 
-# Check Ollama (host service)
-info "Testing Ollama (host service)..."
+# Check Ollama
+info "Testing Ollama service..."
 if curl -s -f "http://localhost:11434/api/tags" > /dev/null 2>&1; then
     success "Ollama is ready"
 else
     error "Ollama connection failed"
 fi
 
-# Check configured LLM models
-info "Checking configured LLM model(s) from .env..."
-if [ ! -f .env ]; then
-    error ".env file is missing"
-else
-    BASE_MODEL=$(grep -E '^LLM_MODEL=' .env | tail -n 1 | cut -d '=' -f2- | tr -d '\r' | xargs)
-    CHAT_MODEL=$(grep -E '^LLM_MODEL_CHAT=' .env | tail -n 1 | cut -d '=' -f2- | tr -d '\r' | xargs)
-    ANALYSIS_MODEL=$(grep -E '^LLM_MODEL_ANALYSIS=' .env | tail -n 1 | cut -d '=' -f2- | tr -d '\r' | xargs)
-    DECISION_MODEL=$(grep -E '^LLM_MODEL_DECISION=' .env | tail -n 1 | cut -d '=' -f2- | tr -d '\r' | xargs)
+# Check registered Ollama model tags
+info "Checking required Ollama model tag(s)..."
+TAGS_JSON=$(curl -s "http://localhost:11434/api/tags")
+REQUIRED_MODELS=("healthcare-base" "healthcare-chat" "healthcare-analysis" "healthcare-decision")
 
-    if [ -z "$BASE_MODEL" ]; then
-        error "LLM_MODEL is not configured in .env"
+for model_name in "${REQUIRED_MODELS[@]}"; do
+    if model_exists_in_ollama "$model_name" "$TAGS_JSON"; then
+        success "Ollama model available: $model_name"
     else
-        TAGS_JSON=$(curl -s "http://localhost:11434/api/tags")
-        REQUIRED_MODELS=("$BASE_MODEL" "$CHAT_MODEL" "$ANALYSIS_MODEL" "$DECISION_MODEL")
-        UNIQUE_MODELS=()
-
-        for model_name in "${REQUIRED_MODELS[@]}"; do
-            [ -z "$model_name" ] && continue
-            found=false
-            for existing_model in "${UNIQUE_MODELS[@]}"; do
-                if [ "$existing_model" = "$model_name" ]; then
-                    found=true
-                    break
-                fi
-            done
-            if [ "$found" = false ]; then
-                UNIQUE_MODELS+=("$model_name")
-            fi
-        done
-
-        for model_name in "${UNIQUE_MODELS[@]}"; do
-            if model_exists_in_ollama "$model_name" "$TAGS_JSON"; then
-                success "Ollama model available: $model_name"
-            else
-                error "Missing Ollama model: $model_name"
-            fi
-        done
+        error "Missing Ollama model: $model_name"
     fi
-fi
+done
 
 # ============================================
 # LAYER 2: Database Schema Verification

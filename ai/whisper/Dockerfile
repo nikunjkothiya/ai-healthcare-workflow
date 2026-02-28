@@ -14,8 +14,8 @@ WORKDIR /whisper.cpp
 RUN git clone https://github.com/ggerganov/whisper.cpp.git . && \
     make
 
-# Models are mounted from host via docker-compose volume (./models/whisper:/models)
-# No model download here — place models in the project's models/whisper/ directory.
+# Models are mounted from host via docker-compose volume (./models/whisper:/models/whisper)
+# No model download here - place models in the project's models/whisper/ directory.
 # See models/README.md for instructions.
 
 WORKDIR /audio

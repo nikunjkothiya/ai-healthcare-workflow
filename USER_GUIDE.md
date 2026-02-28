@@ -1013,10 +1013,8 @@ docker exec healthcare_redis redis-cli KEYS "*"
 # Check Ollama
 curl http://localhost:11434/api/tags
 
-# Restart worker (Ollama runs on host by default)
-docker compose restart worker
-# Host Ollama restart (if needed)
-# pkill ollama && ollama serve
+# Restart worker + Ollama service
+docker compose restart ollama worker
 ```
 
 ### Issue: No transcripts
@@ -1047,7 +1045,7 @@ docker compose restart whisper backend worker
 docker stats
 
 # Check Ollama model
-ollama list
+docker exec healthcare_ollama ollama list
 
 # Scale workers
 docker compose up --scale worker=3 -d
@@ -1076,12 +1074,11 @@ docker compose down -v
 # Start fresh
 docker compose up -d
 
-# Pull configured Ollama models from .env
-source .env
-ollama pull "$LLM_MODEL"
-ollama pull "$LLM_MODEL_CHAT"
-ollama pull "$LLM_MODEL_ANALYSIS"
-ollama pull "$LLM_MODEL_DECISION"
+# Ensure local Ollama GGUF files exist and .env paths are correct
+ls models/ollama
+
+# Re-register models inside Ollama container
+docker compose restart ollama backend worker
 
 # Wait for services
 sleep 60
@@ -1292,8 +1289,8 @@ docker logs healthcare_worker --tail 50
 ```
 
 Solution:
-- Verify Ollama running: `ollama serve`
-- Check configured model(s) are loaded: `ollama list`
+- Verify Ollama container is running: `docker compose ps ollama`
+- Check configured model(s) are loaded: `docker exec healthcare_ollama ollama list`
 - Restart worker: `docker compose restart worker`
 
 **Issue: Post-Call Analysis Not Completing**

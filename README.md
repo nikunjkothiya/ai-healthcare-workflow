@@ -17,6 +17,7 @@ Before running the system, ensure you have:
 - **8GB RAM** minimum (16GB recommended)
 - **10GB free disk space**
 - **Internet connection** (for first-time setup)
+- **Local Coqui TTS model files** in `models/tts/` (see `models/tts/README.md`)
 
 ### One-Command Installation
 
@@ -33,8 +34,8 @@ chmod +x start.sh verify.sh
 
 The `start.sh` script will automatically:
 1. [OK] Check prerequisites (Docker, Docker Compose)
-2. [OK] Install Ollama if not present
-3. [OK] Download configured Ollama model(s) from `.env`
+2. [OK] Validate local model files in `models/` (Whisper, Ollama, TTS)
+3. [OK] Register Ollama model tags from local GGUF files
 4. [OK] Build all Docker images
 5. [OK] Start all services
 6. [OK] Initialize database with seed data
@@ -64,12 +65,7 @@ docker compose down -v --remove-orphans
 # 2) Build fresh images without cache
 docker compose build --no-cache
 
-# 3) Pull configured Ollama model(s) from .env
-source .env
-ollama pull "$LLM_MODEL"
-ollama pull "$LLM_MODEL_CHAT"
-ollama pull "$LLM_MODEL_ANALYSIS"
-ollama pull "$LLM_MODEL_DECISION"
+# 3) Ensure local model files exist in models/whisper, models/ollama, and models/tts
 
 # 4) Start all services
 docker compose up -d
@@ -507,7 +503,7 @@ dead_letter_queue (
 |---------|-------|------|---------|
 | **postgres** | postgres:15-alpine | 5434 | Database |
 | **redis** | redis:7-alpine | 6381 | Queue + PubSub |
-| **ollama** | Host Service | 11434 | LLM (env-configured models) |
+| **ollama** | ollama/ollama | 11434 | LLM service (local GGUF import) |
 | **whisper** | Custom | 9000 (internal) | Speech-to-text (whisper-server) |
 | **tts** | synesthesiam/coqui-tts | 5002 | Server-side text-to-speech |
 | **backend** | Custom Node.js | 4000 | API + WebSocket |
@@ -538,24 +534,28 @@ REDIS_PORT=6379
 JWT_SECRET=supersecret_change_in_production
 
 # AI Services
-OLLAMA_URL=http://host.docker.internal:11434
-LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
-LLM_MODEL_CHAT=qwen2.5:3b-instruct-q4_K_M
-LLM_MODEL_ANALYSIS=qwen2.5:7b-instruct-q4_K_M
-LLM_MODEL_DECISION=qwen2.5:3b-instruct-q4_K_M
-LLM_MAX_TOKENS=512
-LLM_NUM_CTX=2048
+OLLAMA_URL=http://ollama:11434
+OLLAMA_MODEL_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
+OLLAMA_MODEL_CHAT_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
+OLLAMA_MODEL_ANALYSIS_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
+OLLAMA_MODEL_DECISION_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
+LLM_MAX_TOKENS=200
+LLM_NUM_CTX=1536
+LLM_NUM_CTX_REALTIME=1536
 LLM_MAX_TOKENS_ANALYSIS=768
 LLM_NUM_CTX_ANALYSIS=8192
-LLM_AUTO_PULL_MODELS=false
 LLM_TIMEOUT_MS=45000
 WHISPER_HOST=whisper
 WHISPER_PORT=9000
-WHISPER_MODEL_PATH=/models/ggml-base.en.bin
-STT_CHUNK_MS=1800
+WHISPER_MODEL_PATH=/models/whisper/ggml-small.en.bin
+STT_CHUNK_MS=2500
 STT_SILENCE_MS=800
 TTS_HOST=tts
 TTS_PORT=5002
+TTS_MODEL_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar
+TTS_CONFIG_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/config.json
+TTS_VOCODER_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file.pth.tar
+TTS_VOCODER_CONFIG_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json
 MAX_CALL_DURATION_MS=600000
 MAX_CONVERSATION_TURNS=30
 MAX_RUNTIME_RAM_GB=14
@@ -577,26 +577,28 @@ PORT=4000
 ### AI Models Configuration (Local Directory)
 
 All large AI model binaries are now served via local bind mounts to avoid re-downloading during Docker builds. See [models/README.md](./models/README.md) for detailed instructions on adding or swapping models.
+Only `README.md` files are committed under `models/`; model assets must be provided locally by each user.
 
 **Whisper (STT):**
 - Default Model: `models/whisper/ggml-small.en.bin` (466MB)
 - Chunking: ~2.5s realtime chunks with deduplicated partial updates
 - Silence finalization: ~800ms before LLM turn submission
 - Runs in Docker container via `whisper-server` on port `9000` (`/inference`)
-- **No model downloads during build** — model is mounted to `/models/` inside container.
+- **No model downloads during build** — model is mounted to `/models/whisper/` inside container.
 
-**Ollama (LLM):**
-- Models run on the host system at `~/.ollama/` (not inside Docker)
-- Accessed via `http://host.docker.internal:11434`
-- Realtime model: `Qwen2.5 3B Instruct (Q4_K_M)` (configured via `LLM_MODEL_CHAT` in `.env`)
-- Post-call analysis model: `Qwen2.5 7B Instruct (Q4_K_M)` (configured via `LLM_MODEL_ANALYSIS` in `.env`)
-- Runtime manager automatically swaps loaded models safely to save VRAM.
+**Ollama (LLM in Docker):**
+- Runs as `healthcare_ollama` container on port `11434`.
+- Registers/refreshes local GGUF files from `models/ollama/` at startup.
+- Env variables used: `OLLAMA_MODEL_PATH`, `OLLAMA_MODEL_CHAT_PATH`, `OLLAMA_MODEL_ANALYSIS_PATH`, `OLLAMA_MODEL_DECISION_PATH`.
+- Internal Ollama tags: `healthcare-base`, `healthcare-chat`, `healthcare-analysis`, `healthcare-decision`.
+- Runtime manager still handles realtime/analysis model stage swaps.
 
 **Coqui TTS (Required in Production Mode):**
 - Default Model: `tacotron2-DDC` (+ HiFiGAN vocoder) (~112MB)
-- Extracted to `models/tts/` and mounted to `/root/.local/share/tts` inside container.
+- Files are stored in `models/tts/` and mounted to `/models/tts` inside container.
+- Container starts with explicit local file paths (`TTS_MODEL_PATH`, `TTS_CONFIG_PATH`, `TTS_VOCODER_PATH`, `TTS_VOCODER_CONFIG_PATH`).
 - Backend enforces server-generated voice when `REQUIRE_SERVER_TTS=true`
-- **No model downloads during build** — models load directly from host mount.
+- **No model downloads during build or startup** - models load directly from host mount.
 
 ---
 
@@ -998,14 +1000,12 @@ docker ps
 #### Issue: "Cannot connect to Ollama"
 **Solution:**
 ```bash
-# Check if Ollama is running
+# Check Ollama container
+docker logs healthcare_ollama
+docker compose restart ollama
+
+# Verify API
 curl http://localhost:11434/api/tags
-
-# If not, start it
-ollama serve
-
-# Or restart the script
-./start.sh
 ```
 
 #### Issue: "Port already in use"
@@ -1034,12 +1034,9 @@ docker compose restart worker
 
 ### Ollama slow
 ```bash
-# Pull configured model(s) from .env
-source .env
-ollama pull "$LLM_MODEL"
-ollama pull "$LLM_MODEL_CHAT"
-ollama pull "$LLM_MODEL_ANALYSIS"
-ollama pull "$LLM_MODEL_DECISION"
+# Ensure smaller GGUF quantizations are used in models/ollama and paths in .env
+docker logs -f healthcare_ollama
+docker compose restart ollama
 ```
 
 ### Database issues

@@ -41,23 +41,30 @@ services:
     networks:
       - healthcare_network
 
-  # Ollama: Using host-installed Ollama (already running on port 11434)
-  # If you don't have Ollama installed locally, uncomment the block below:
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: healthcare_ollama
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
-  #     interval: 10s
-  #     timeout: 10s
-  #     retries: 10
-  #     start_period: 30s
-  #   networks:
-  #     - healthcare_network
+  ollama:
+    image: ollama/ollama:latest
+    container_name: healthcare_ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_MODEL_PATH=${OLLAMA_MODEL_PATH}
+      - OLLAMA_MODEL_CHAT_PATH=${OLLAMA_MODEL_CHAT_PATH}
+      - OLLAMA_MODEL_DECISION_PATH=${OLLAMA_MODEL_DECISION_PATH}
+      - OLLAMA_MODEL_ANALYSIS_PATH=${OLLAMA_MODEL_ANALYSIS_PATH}
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./models/ollama:/models/ollama
+      - ./scripts/ollama-entrypoint.sh:/usr/local/bin/ollama-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/ollama-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - healthcare_network
 
   whisper:
     build:
@@ -71,18 +78,29 @@ services:
       retries: 10
       start_period: 30s
     volumes:
-      - ./models/whisper:/models
+      - ./models/whisper:/models/whisper
     networks:
       - healthcare_network
     command: >
-      /whisper.cpp/build/bin/whisper-server --host 0.0.0.0 --port 9000 --inference-path /inference -m /models/ggml-small.en.bin --language en --no-timestamps
+      /whisper.cpp/build/bin/whisper-server --host 0.0.0.0 --port 9000 --inference-path /inference -m ${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en.bin} --language en --no-timestamps
 
   tts:
     image: synesthesiam/coqui-tts:latest
     container_name: healthcare_tts
     ports:
       - "5002:5002"
-    entrypoint: ["python3", "-m", "TTS.server.server", "--model_name", "tts_models/en/ljspeech/tacotron2-DDC", "--use_cuda", "false"]
+    entrypoint: ["python3", "-m", "TTS.server.server"]
+    command:
+      - "--model_path"
+      - "${TTS_MODEL_PATH:-/models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar}"
+      - "--config_path"
+      - "${TTS_CONFIG_PATH:-/models/tts/tts_models--en--ljspeech--tacotron2-DDC/config.json}"
+      - "--vocoder_path"
+      - "${TTS_VOCODER_PATH:-/models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file.pth.tar}"
+      - "--vocoder_config_path"
+      - "${TTS_VOCODER_CONFIG_PATH:-/models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json}"
+      - "--use_cuda"
+      - "false"
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -97,7 +115,7 @@ services:
         limits:
           memory: 1024M
     volumes:
-      - ./models/tts:/root/.local/share/tts
+      - ./models/tts:/models/tts
     networks:
       - healthcare_network
 
@@ -118,16 +136,11 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - JWT_SECRET=supersecret_change_in_production
-      - OLLAMA_URL=http://host.docker.internal:11434
-      - LLM_MODEL=${LLM_MODEL}
-      - LLM_MODEL_CHAT=${LLM_MODEL_CHAT}
-      - LLM_MODEL_ANALYSIS=${LLM_MODEL_ANALYSIS}
-      - LLM_MODEL_DECISION=${LLM_MODEL_DECISION}
+      - OLLAMA_URL=http://ollama:11434
       - LLM_MAX_TOKENS=${LLM_MAX_TOKENS}
       - LLM_NUM_CTX=${LLM_NUM_CTX}
       - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS}
       - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS}
-      - LLM_AUTO_PULL_MODELS=${LLM_AUTO_PULL_MODELS}
       - CALL_SPACING_MS=15000
       - RING_TIMEOUT_MS=30000
       - AUDIO_TMP_DIR=/tmp/healthcare_audio
@@ -151,12 +164,12 @@ services:
         condition: service_healthy
       tts:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
     deploy:
       resources:
         limits:
           memory: 256M
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - healthcare_network
 
@@ -174,16 +187,11 @@ services:
       - DB_PORT=5432
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - OLLAMA_URL=http://host.docker.internal:11434
-      - LLM_MODEL=${LLM_MODEL}
-      - LLM_MODEL_CHAT=${LLM_MODEL_CHAT}
-      - LLM_MODEL_ANALYSIS=${LLM_MODEL_ANALYSIS}
-      - LLM_MODEL_DECISION=${LLM_MODEL_DECISION}
+      - OLLAMA_URL=http://ollama:11434
       - LLM_MAX_TOKENS=${LLM_MAX_TOKENS}
       - LLM_NUM_CTX=${LLM_NUM_CTX}
       - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS}
       - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS}
-      - LLM_AUTO_PULL_MODELS=${LLM_AUTO_PULL_MODELS}
       - WORKER_CONCURRENCY=1
       - CALL_SPACING_MS=15000
       - WEBSOCKET_CALL_MAX_WAIT_MS=720000
@@ -204,14 +212,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
     volumes:
       - ./ai/sample_audio:/sample_audio
     deploy:
       resources:
         limits:
           memory: 256M
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - healthcare_network
 

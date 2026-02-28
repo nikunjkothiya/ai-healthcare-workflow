@@ -44,7 +44,7 @@ echo "=========================================="
 echo ""
 echo "This script will:"
 echo "  1. Check prerequisites"
-echo "  2. Install/configure Ollama"
+echo "  2. Validate local AI model files"
 echo "  3. Build Docker images"
 echo "  4. Start all services"
 echo "  5. Initialize database"
@@ -64,7 +64,7 @@ fi
 success "Docker is installed"
 
 # Check Docker Compose
-if ! command -v docker compose &> /dev/null; then
+if ! docker compose version > /dev/null 2>&1; then
     error "Docker Compose is not installed. Please install Docker Compose first:
     
     Ubuntu/Debian: sudo apt-get install docker-compose-plugin
@@ -94,16 +94,16 @@ DB_PORT=5432
 REDIS_HOST=redis
 REDIS_PORT=6379
 JWT_SECRET=supersecret_change_in_production
-OLLAMA_URL=http://host.docker.internal:11434
-LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
-LLM_MODEL_CHAT=qwen2.5:3b-instruct-q4_K_M
-LLM_MODEL_ANALYSIS=qwen2.5:7b-instruct-q4_K_M
-LLM_MODEL_DECISION=qwen2.5:3b-instruct-q4_K_M
-LLM_MAX_TOKENS=512
-LLM_NUM_CTX=2048
+OLLAMA_URL=http://ollama:11434
+OLLAMA_MODEL_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
+OLLAMA_MODEL_CHAT_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
+OLLAMA_MODEL_ANALYSIS_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
+OLLAMA_MODEL_DECISION_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
+LLM_MAX_TOKENS=200
+LLM_NUM_CTX=1536
+LLM_NUM_CTX_REALTIME=1536
 LLM_MAX_TOKENS_ANALYSIS=768
 LLM_NUM_CTX_ANALYSIS=8192
-LLM_AUTO_PULL_MODELS=false
 LLM_TIMEOUT_MS=45000
 WORKER_CONCURRENCY=1
 CALL_SPACING_MS=15000
@@ -112,11 +112,15 @@ WEBSOCKET_CALL_MAX_WAIT_MS=720000
 POST_CALL_ANALYSIS_MAX_WAIT_MS=90000
 WHISPER_HOST=whisper
 WHISPER_PORT=9000
-WHISPER_MODEL_PATH=/models/ggml-base.en.bin
-STT_CHUNK_MS=1800
+WHISPER_MODEL_PATH=/models/whisper/ggml-small.en.bin
+STT_CHUNK_MS=2500
 STT_SILENCE_MS=800
 TTS_HOST=tts
 TTS_PORT=5002
+TTS_MODEL_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar
+TTS_CONFIG_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/config.json
+TTS_VOCODER_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file.pth.tar
+TTS_VOCODER_CONFIG_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json
 MAX_CALL_DURATION_MS=600000
 MAX_CONVERSATION_TURNS=30
 MAX_RUNTIME_RAM_GB=14
@@ -129,175 +133,115 @@ else
     success ".env file exists"
 fi
 
-# Check Ollama
-section "STEP 2: Installing/Configuring Ollama"
-
-if ! command -v ollama &> /dev/null; then
-    warning "Ollama is not installed. Installing now..."
-    
-    # Detect OS
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        info "Installing Ollama on Linux..."
-        curl -fsSL https://ollama.ai/install.sh | sh
-        success "Ollama installed"
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        info "Installing Ollama on macOS..."
-        if command -v brew &> /dev/null; then
-            brew install ollama
-            success "Ollama installed"
-        else
-            error "Homebrew not found. Please install Ollama manually:
-            
-            Visit: https://ollama.ai/download"
-        fi
-    else
-        error "Unsupported OS. Please install Ollama manually:
-        
-        Visit: https://ollama.ai/download"
-    fi
-else
-    success "Ollama is already installed"
-fi
-
-# Start Ollama service
-info "Starting Ollama service..."
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    # Linux with systemd
-    if command -v systemctl &> /dev/null; then
-        # Configure Ollama to listen on all interfaces
-        if [ ! -f /etc/systemd/system/ollama.service.d/override.conf ]; then
-            info "Configuring Ollama to listen on all interfaces..."
-            sudo mkdir -p /etc/systemd/system/ollama.service.d
-            echo -e "[Service]\nEnvironment=\"OLLAMA_HOST=0.0.0.0:11434\"" | sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null
-            sudo systemctl daemon-reload
-        fi
-        
-        sudo systemctl enable ollama 2>/dev/null || true
-        sudo systemctl start ollama 2>/dev/null || true
-        sleep 3
-        success "Ollama service started"
-    else
-        # Start Ollama in background
-        nohup ollama serve > /dev/null 2>&1 &
-        sleep 3
-        success "Ollama started in background"
-    fi
-elif [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
-    if ! pgrep -x "ollama" > /dev/null; then
-        nohup ollama serve > /dev/null 2>&1 &
-        sleep 3
-        success "Ollama started in background"
-    else
-        success "Ollama is already running"
-    fi
-fi
-
-# Verify Ollama is accessible
-info "Verifying Ollama connection..."
-MAX_ATTEMPTS=10
-ATTEMPT=0
-while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-    if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-        success "Ollama is accessible"
-        break
-    fi
-    ATTEMPT=$((ATTEMPT + 1))
-    sleep 2
-done
-
-if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
-    error "Cannot connect to Ollama. Please check if it's running:
-    
-    Test: curl http://localhost:11434/api/tags"
-fi
-
-# Pull configured LLM models
+# Local model helpers
 get_env_value() {
     local key="$1"
     grep -E "^${key}=" .env | tail -n 1 | cut -d '=' -f2- | tr -d '\r' | xargs
 }
 
-normalize_model_name() {
-    echo "$1" | tr '[:upper:]' '[:lower:]' | xargs
-}
+resolve_model_host_path() {
+    local container_path="$1"
+    local container_prefix="$2"
+    local host_prefix="$3"
 
-get_available_model_names() {
-    local tags_json="$1"
-    echo "$tags_json" \
-      | grep -oE '"(name|model)":"[^"]+"' \
-      | sed -E 's/"(name|model)":"([^"]+)"/\2/' \
-      | tr '[:upper:]' '[:lower:]' \
-      | sort -u
-}
-
-model_exists_in_ollama() {
-    local required_model
-    required_model=$(normalize_model_name "$1")
-    local tags_json="$2"
-
-    if [ -z "$required_model" ]; then
-        return 1
+    if [[ "$container_path" == "$container_prefix"* ]]; then
+        echo "${host_prefix}${container_path#$container_prefix}"
+        return
     fi
 
-    local available_model
-    while IFS= read -r available_model; do
-        [ -z "$available_model" ] && continue
-        if [ "$available_model" = "$required_model" ]; then
-            return 0
-        fi
-        if [[ "$available_model" == "$required_model"* ]]; then
-            return 0
-        fi
-        if [[ "$required_model" == "$available_model"* ]]; then
-            return 0
-        fi
-    done < <(get_available_model_names "$tags_json")
-
-    return 1
+    echo "$container_path"
 }
 
-BASE_MODEL=$(get_env_value "LLM_MODEL")
-CHAT_MODEL=$(get_env_value "LLM_MODEL_CHAT")
-ANALYSIS_MODEL=$(get_env_value "LLM_MODEL_ANALYSIS")
-DECISION_MODEL=$(get_env_value "LLM_MODEL_DECISION")
+assert_local_file() {
+    local label="$1"
+    local file_path="$2"
+    local help_text="$3"
 
-if [ -z "$BASE_MODEL" ]; then
-    error "LLM_MODEL is missing in .env. Configure model names before startup."
+    if [ -z "$file_path" ]; then
+        error "$label is not configured in .env."
+    fi
+
+    if [ ! -f "$file_path" ]; then
+        error "$label not found at '$file_path'.
+
+$help_text"
+    fi
+}
+
+section "STEP 2: Validating Local AI Model Files"
+
+OLLAMA_MODEL_PATH=$(get_env_value "OLLAMA_MODEL_PATH")
+OLLAMA_MODEL_CHAT_PATH=$(get_env_value "OLLAMA_MODEL_CHAT_PATH")
+OLLAMA_MODEL_ANALYSIS_PATH=$(get_env_value "OLLAMA_MODEL_ANALYSIS_PATH")
+OLLAMA_MODEL_DECISION_PATH=$(get_env_value "OLLAMA_MODEL_DECISION_PATH")
+
+if [ -z "$OLLAMA_MODEL_PATH" ]; then
+    OLLAMA_MODEL_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
+fi
+if [ -z "$OLLAMA_MODEL_CHAT_PATH" ]; then
+    OLLAMA_MODEL_CHAT_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
+fi
+if [ -z "$OLLAMA_MODEL_ANALYSIS_PATH" ]; then
+    OLLAMA_MODEL_ANALYSIS_PATH="/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf"
+fi
+if [ -z "$OLLAMA_MODEL_DECISION_PATH" ]; then
+    OLLAMA_MODEL_DECISION_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
 fi
 
-MODELS_TO_CHECK=("$BASE_MODEL" "$CHAT_MODEL" "$ANALYSIS_MODEL" "$DECISION_MODEL")
-UNIQUE_MODELS=()
-for model_name in "${MODELS_TO_CHECK[@]}"; do
-    [ -z "$model_name" ] && continue
-    found=false
-    for existing_model in "${UNIQUE_MODELS[@]}"; do
-        if [ "$existing_model" = "$model_name" ]; then
-            found=true
-            break
-        fi
-    done
-    if [ "$found" = false ]; then
-        UNIQUE_MODELS+=("$model_name")
-    fi
-done
+HOST_OLLAMA_MODEL_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_PATH" "/models/ollama/" "./models/ollama/")
+HOST_OLLAMA_MODEL_CHAT_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_CHAT_PATH" "/models/ollama/" "./models/ollama/")
+HOST_OLLAMA_MODEL_ANALYSIS_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_ANALYSIS_PATH" "/models/ollama/" "./models/ollama/")
+HOST_OLLAMA_MODEL_DECISION_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_DECISION_PATH" "/models/ollama/" "./models/ollama/")
 
-if [ ${#UNIQUE_MODELS[@]} -eq 0 ]; then
-    error "No LLM models configured in .env."
+info "Checking local Ollama GGUF model files..."
+assert_local_file "Ollama base model" "$HOST_OLLAMA_MODEL_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
+assert_local_file "Ollama chat model" "$HOST_OLLAMA_MODEL_CHAT_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
+assert_local_file "Ollama analysis model" "$HOST_OLLAMA_MODEL_ANALYSIS_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
+assert_local_file "Ollama decision model" "$HOST_OLLAMA_MODEL_DECISION_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
+success "Local Ollama model files are ready"
+
+WHISPER_MODEL_PATH=$(get_env_value "WHISPER_MODEL_PATH")
+if [ -z "$WHISPER_MODEL_PATH" ]; then
+    WHISPER_MODEL_PATH="/models/whisper/ggml-small.en.bin"
 fi
 
-info "Ensuring configured Ollama model(s) are available: ${UNIQUE_MODELS[*]}"
-for model_name in "${UNIQUE_MODELS[@]}"; do
-    TAGS_JSON=$(curl -s http://localhost:11434/api/tags)
-    if model_exists_in_ollama "$model_name" "$TAGS_JSON"; then
-        success "Model '${model_name}' is already available"
-        continue
-    fi
+HOST_WHISPER_MODEL_PATH=$(resolve_model_host_path "$WHISPER_MODEL_PATH" "/models/whisper/" "./models/whisper/")
 
-    info "Pulling model '${model_name}' (first-time download may take several minutes)..."
-    ollama pull "$model_name"
-    success "Model '${model_name}' ready"
-done
+info "Checking local Whisper model file..."
+assert_local_file "Whisper model" "$HOST_WHISPER_MODEL_PATH" "Place Whisper GGML files under ./models/whisper and update WHISPER_MODEL_PATH in .env."
+success "Local Whisper model file is ready"
+
+section "STEP 2B: Validating Local TTS Model Files"
+
+TTS_MODEL_PATH=$(get_env_value "TTS_MODEL_PATH")
+TTS_CONFIG_PATH=$(get_env_value "TTS_CONFIG_PATH")
+TTS_VOCODER_PATH=$(get_env_value "TTS_VOCODER_PATH")
+TTS_VOCODER_CONFIG_PATH=$(get_env_value "TTS_VOCODER_CONFIG_PATH")
+
+if [ -z "$TTS_MODEL_PATH" ]; then
+    TTS_MODEL_PATH="/models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar"
+fi
+if [ -z "$TTS_CONFIG_PATH" ]; then
+    TTS_CONFIG_PATH="/models/tts/tts_models--en--ljspeech--tacotron2-DDC/config.json"
+fi
+if [ -z "$TTS_VOCODER_PATH" ]; then
+    TTS_VOCODER_PATH="/models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file.pth.tar"
+fi
+if [ -z "$TTS_VOCODER_CONFIG_PATH" ]; then
+    TTS_VOCODER_CONFIG_PATH="/models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json"
+fi
+
+HOST_TTS_MODEL_PATH=$(resolve_model_host_path "$TTS_MODEL_PATH" "/models/tts/" "./models/tts/")
+HOST_TTS_CONFIG_PATH=$(resolve_model_host_path "$TTS_CONFIG_PATH" "/models/tts/" "./models/tts/")
+HOST_TTS_VOCODER_PATH=$(resolve_model_host_path "$TTS_VOCODER_PATH" "/models/tts/" "./models/tts/")
+HOST_TTS_VOCODER_CONFIG_PATH=$(resolve_model_host_path "$TTS_VOCODER_CONFIG_PATH" "/models/tts/" "./models/tts/")
+
+info "Checking local Coqui TTS model files..."
+assert_local_file "TTS model" "$HOST_TTS_MODEL_PATH" "Place Coqui model files under ./models/tts and update TTS_* paths in .env."
+assert_local_file "TTS config" "$HOST_TTS_CONFIG_PATH" "Place Coqui model files under ./models/tts and update TTS_* paths in .env."
+assert_local_file "TTS vocoder model" "$HOST_TTS_VOCODER_PATH" "Place Coqui model files under ./models/tts and update TTS_* paths in .env."
+assert_local_file "TTS vocoder config" "$HOST_TTS_VOCODER_CONFIG_PATH" "Place Coqui model files under ./models/tts and update TTS_* paths in .env."
+success "Local Coqui TTS model files are ready"
 
 # Check if system is already running
 section "STEP 3: Checking Existing Containers"
@@ -398,6 +342,14 @@ if wait_for_service "healthcare_redis"; then
     success "Redis is ready"
 else
     error "Redis failed to start. Check logs: docker logs healthcare_redis"
+fi
+
+# Ollama
+info "Waiting for Ollama..."
+if wait_for_service "healthcare_ollama"; then
+    success "Ollama is ready"
+else
+    error "Ollama failed to start. Check logs: docker logs healthcare_ollama"
 fi
 
 # Whisper

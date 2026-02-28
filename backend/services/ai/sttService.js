@@ -12,7 +12,7 @@ class STTService {
     this.whisperHost = process.env.WHISPER_HOST || 'whisper';
     this.whisperPort = parseInt(process.env.WHISPER_PORT, 10) || 9000;
     this.whisperBaseUrl = `http://${this.whisperHost}:${this.whisperPort}`;
-    this.modelPath = process.env.WHISPER_MODEL_PATH || '/models/ggml-small.en.bin';
+    this.modelPath = process.env.WHISPER_MODEL_PATH || '/models/whisper/ggml-small.en.bin';
     this.whisperBinaryPath = process.env.WHISPER_BINARY_PATH || '/whisper.cpp/build/bin/whisper-cli';
 
     this.realtimeChunkMs = parseInt(process.env.STT_CHUNK_MS, 10) || 2500;
