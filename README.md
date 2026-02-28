@@ -2,9 +2,7 @@
 
 ## Overview
 
-Complete AI orchestration platform for healthcare outreach with real-time voice conversations, automated batch campaigns, state management, event-driven architecture, and multi-tenant support.
-
-**Status: [OK] PRODUCTION-READY - All components tested and verified**
+Complete AI orchestration platform for healthcare outreach with real-time voice conversations, automated batch campaigns, state management, event-driven architecture
 
 ---
 
@@ -17,7 +15,7 @@ Before running the system, ensure you have:
 - **8GB RAM** minimum (16GB recommended)
 - **10GB free disk space**
 - **Internet connection** (for first-time setup)
-- **Local Coqui TTS model files** in `models/tts/` (see `models/tts/README.md`)
+- **Local models files** in `models/**/` (see `models/**/README.md`)
 
 ### One-Command Installation
 
@@ -33,13 +31,13 @@ chmod +x start.sh verify.sh
 ```
 
 The `start.sh` script will automatically:
-1. [OK] Check prerequisites (Docker, Docker Compose)
-2. [OK] Validate local model files in `models/` (Whisper, Ollama, TTS)
-3. [OK] Register Ollama model tags from local GGUF files
-4. [OK] Build all Docker images
-5. [OK] Start all services
-6. [OK] Initialize database with seed data
-7. [OK] Wait for all services to be healthy
+1. Check prerequisites (Docker, Docker Compose)
+2. Validate local model files in `models/` (Whisper, Ollama, TTS)
+3. Register Ollama model tags from local GGUF files
+4. Build all Docker images
+5. Start all services
+6. Initialize database with seed data
+7. Wait for all services to be healthy
 
 **First-time setup takes 5-10 minutes. Subsequent starts take ~30 seconds.**
 
@@ -170,29 +168,29 @@ VERIFY_CALL_MODE=websocket ./verify.sh
 **The system has been thoroughly tested and hardened with critical bug fixes:**
 
 **Critical Fixes:**
-- [OK] LLM availability checked before each call (prevents silent failures)
-- [OK] Post-call analysis failures properly handled (no incomplete data)
-- [OK] Campaign start race conditions prevented (no duplicate calls)
-- [OK] Session validation enforced (prevents wrong patient calls)
-- [OK] Invalid state transitions throw errors (ensures data consistency)
+- LLM availability checked before each call (prevents silent failures)
+- Post-call analysis failures properly handled (no incomplete data)
+- Campaign start race conditions prevented (no duplicate calls)
+- Session validation enforced (prevents wrong patient calls)
+- Invalid state transitions throw errors (ensures data consistency)
 
 **High-Priority Fixes:**
-- [OK] Patient assignment uses row locking (prevents race conditions)
-- [OK] Input validation on all campaign endpoints (prevents invalid data)
-- [OK] Audio buffer cleared on errors (prevents transcript corruption)
-- [OK] Composite database index added (improves dashboard query performance)
+- Patient assignment uses row locking (prevents race conditions)
+- Input validation on all campaign endpoints (prevents invalid data)
+- Audio buffer cleared on errors (prevents transcript corruption)
+- Composite database index added (improves dashboard query performance)
 
 **Security Improvements:**
-- [OK] Organization isolation enforced (multi-tenant security)
-- [OK] Campaign name length validation (3-255 characters)
-- [OK] Opening prompt validation (10-500 characters)
-- [OK] Retry limit validation (0-10 attempts)
-- [OK] NO automatic retries by default (retry_limit: 0)
+- Organization isolation enforced (multi-tenant security)
+- Campaign name length validation (3-255 characters)
+- Opening prompt validation (10-500 characters)
+- Retry limit validation (0-10 attempts)
+- NO automatic retries by default (retry_limit: 0)
 
 **Error Handling:**
-- [OK] Graceful degradation when AI services unavailable
-- [OK] Proper error propagation through state machine
-- [OK] Analysis failures stored in database for debugging
+- Graceful degradation when AI services unavailable
+- Proper error propagation through state machine
+- Analysis failures stored in database for debugging
 
 ### Campaign Management
 
@@ -213,7 +211,7 @@ VERIFY_CALL_MODE=websocket ./verify.sh
 - Live patient status updates in campaign modal
 - Status flow: pending -> queued -> ringing -> calling -> completed/missed/rejected
 - Campaign completes when all patients processed
-- [OK] Audio processing errors don't crash calls
+- Audio processing errors don't crash calls
 
 ---
 
