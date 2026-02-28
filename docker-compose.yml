@@ -1,0 +1,244 @@
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: healthcare_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: healthcare
+    ports:
+      - "5434:5432"  # Changed to 5434 to avoid conflict
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - healthcare_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: healthcare_redis
+    ports:
+      - "6381:6379"  # Changed to 6381 to avoid conflict
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    networks:
+      - healthcare_network
+
+  # Ollama: Using host-installed Ollama (already running on port 11434)
+  # If you don't have Ollama installed locally, uncomment the block below:
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: healthcare_ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+  #     interval: 10s
+  #     timeout: 10s
+  #     retries: 10
+  #     start_period: 30s
+  #   networks:
+  #     - healthcare_network
+
+  whisper:
+    build:
+      context: ./ai/whisper
+      dockerfile: Dockerfile
+    container_name: healthcare_whisper
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    volumes:
+      - ./models/whisper:/models
+    networks:
+      - healthcare_network
+    command: >
+      /whisper.cpp/build/bin/whisper-server --host 0.0.0.0 --port 9000 --inference-path /inference -m /models/ggml-small.en.bin --language en --no-timestamps
+
+  tts:
+    image: synesthesiam/coqui-tts:latest
+    container_name: healthcare_tts
+    ports:
+      - "5002:5002"
+    entrypoint: ["python3", "-m", "TTS.server.server", "--model_name", "tts_models/en/ljspeech/tacotron2-DDC", "--use_cuda", "false"]
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/"]
+      interval: 15s
+      timeout: 20s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+    volumes:
+      - ./models/tts:/root/.local/share/tts
+    networks:
+      - healthcare_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: healthcare_backend
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres
+      - DB_USER=postgres
+      - DB_PASS=postgres
+      - DB_NAME=healthcare
+      - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=supersecret_change_in_production
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_MODEL_CHAT=${LLM_MODEL_CHAT}
+      - LLM_MODEL_ANALYSIS=${LLM_MODEL_ANALYSIS}
+      - LLM_MODEL_DECISION=${LLM_MODEL_DECISION}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS}
+      - LLM_NUM_CTX=${LLM_NUM_CTX}
+      - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS}
+      - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS}
+      - LLM_AUTO_PULL_MODELS=${LLM_AUTO_PULL_MODELS}
+      - CALL_SPACING_MS=15000
+      - RING_TIMEOUT_MS=30000
+      - AUDIO_TMP_DIR=/tmp/healthcare_audio
+      - WHISPER_HOST=whisper
+      - WHISPER_PORT=9000
+      - TTS_HOST=tts
+      - TTS_PORT=5002
+      - REQUIRE_SERVER_TTS=true
+      - STT_CHUNK_MS=${STT_CHUNK_MS}
+      - STT_SILENCE_MS=${STT_SILENCE_MS}
+      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS}
+      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH}
+      - MAX_CALL_DURATION_MS=600000
+      - MAX_CONVERSATION_TURNS=30
+      - MAX_RUNTIME_RAM_GB=14
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      tts:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - healthcare_network
+
+  worker:
+    build:
+      context: .
+      dockerfile: ./worker/Dockerfile
+    container_name: healthcare_worker
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres
+      - DB_USER=postgres
+      - DB_PASS=postgres
+      - DB_NAME=healthcare
+      - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_MODEL_CHAT=${LLM_MODEL_CHAT}
+      - LLM_MODEL_ANALYSIS=${LLM_MODEL_ANALYSIS}
+      - LLM_MODEL_DECISION=${LLM_MODEL_DECISION}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS}
+      - LLM_NUM_CTX=${LLM_NUM_CTX}
+      - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS}
+      - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS}
+      - LLM_AUTO_PULL_MODELS=${LLM_AUTO_PULL_MODELS}
+      - WORKER_CONCURRENCY=1
+      - CALL_SPACING_MS=15000
+      - WEBSOCKET_CALL_MAX_WAIT_MS=720000
+      - POST_CALL_ANALYSIS_MAX_WAIT_MS=90000
+      - WHISPER_HOST=whisper
+      - WHISPER_PORT=9000
+      - TTS_HOST=tts
+      - TTS_PORT=5002
+      - REQUIRE_SERVER_TTS=true
+      - STT_CHUNK_MS=${STT_CHUNK_MS}
+      - STT_SILENCE_MS=${STT_SILENCE_MS}
+      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS}
+      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH}
+      - MAX_RUNTIME_RAM_GB=14
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./ai/sample_audio:/sample_audio
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - healthcare_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: healthcare_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:4000
+      - VITE_WS_URL=ws://localhost:4000
+      - VITE_REQUIRE_SERVER_TTS=true
+    depends_on:
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - healthcare_network
+
+volumes:
+  postgres_data:
+  ollama_data:
+
+networks:
+  healthcare_network:
+    driver: bridge

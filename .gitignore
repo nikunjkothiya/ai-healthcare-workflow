@@ -1,0 +1,36 @@
+node_modules/
+dist/
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Audio files
+ai/whisper/audio/*.wav
+ai/sample_audio/*.wav
+!ai/sample_audio/README.md
+
+# Database
+*.db
+*.sqlite
+
+# Docker volumes
+postgres_data/
+ollama_data/
+
+# AI model binaries (large files — see models/README.md for download instructions)
+models/**/*.bin
+models/**/*.pth.tar
+!models/**/README.md
+!models/**/config.json
+!models/README.md
+
+\nmodels.zip

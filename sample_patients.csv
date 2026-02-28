@@ -1,0 +1,4 @@
+name,phone,category,medical_condition,age,appointment_date,doctor
+John Smith,555-0101,diabetes,Type 2 Diabetes,65,2026-03-15,Dr. Wilson
+Sarah Johnson,555-0102,heart_disease,Hypertension,58,2026-03-16,Dr. Chen
+Michael Brown,555-0103,asthma,Chronic Asthma,42,2026-03-17,Dr. Patel
