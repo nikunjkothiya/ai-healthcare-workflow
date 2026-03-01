@@ -56,7 +56,7 @@ services:
       - ollama_data:/root/.ollama
       - ./models/ollama:/models/ollama
       - ./scripts/ollama-entrypoint.sh:/usr/local/bin/ollama-entrypoint.sh:ro
-    entrypoint: ["/bin/sh", "/usr/local/bin/ollama-entrypoint.sh"]
+    entrypoint: ["/bin/sh", "-c", "tr -d '\\r' < /usr/local/bin/ollama-entrypoint.sh > /tmp/ollama-entrypoint.sh && exec /bin/sh /tmp/ollama-entrypoint.sh"]
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 10s

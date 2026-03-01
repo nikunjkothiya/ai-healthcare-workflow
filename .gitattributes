@@ -1,0 +1,6 @@
+# Keep shell scripts LF so they run correctly in Linux containers.
+*.sh text eol=lf
+
+# Keep env files LF to avoid stray carriage returns in container env values.
+.env text eol=lf
+.env.* text eol=lf
