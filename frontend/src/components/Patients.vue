@@ -319,7 +319,7 @@ export default {
         this.patients = response.data.patients;
       } catch (error) {
         console.error('Failed to load patients:', error);
-        alert('Failed to load patients');
+        this.$toastError('Failed to load patients');
       } finally {
         this.loading = false;
       }
@@ -374,10 +374,10 @@ export default {
 
         this.closeModals();
         await this.loadPatients();
-        alert(this.showEditModal ? 'Patient updated!' : 'Patient added!');
+        this.$toastSuccess(this.showEditModal ? 'Patient updated!' : 'Patient added!');
       } catch (error) {
         console.error('Save patient error:', error);
-        alert('Failed to save patient');
+        this.$toastError('Failed to save patient');
       }
     },
     editPatient(patient) {
@@ -405,10 +405,10 @@ export default {
       try {
         await api.delete(`/patients/${patientId}`);
         await this.loadPatients();
-        alert('Patient deleted');
+        this.$toastSuccess('Patient deleted');
       } catch (error) {
         console.error('Delete patient error:', error);
-        alert('Failed to delete patient');
+        this.$toastError('Failed to delete patient');
       }
     },
     closeModals() {
@@ -432,10 +432,10 @@ export default {
         this.showUploadModal = false;
         this.selectedFile = null;
         await this.loadPatients();
-        alert('Patients imported successfully!');
+        this.$toastSuccess('Patients imported successfully!');
       } catch (error) {
         console.error('Import error:', error);
-        alert('Failed to import patients');
+        this.$toastError('Failed to import patients');
       }
     },
     getCategoryCount(category) {

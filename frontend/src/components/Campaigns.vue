@@ -225,7 +225,7 @@ export default {
         this.campaigns = response.data.campaigns;
       } catch (error) {
         console.error('Failed to load campaigns:', error);
-        alert('Failed to load campaigns');
+        this.$toastError('Failed to load campaigns');
       } finally {
         this.loading = false;
       }
@@ -233,12 +233,12 @@ export default {
     
     async createCampaign() {
       if (this.newCampaignCategories.length === 0) {
-        alert('Please select at least one patient group.');
+        this.$toastWarning('Please select at least one patient group.');
         return;
       }
 
       if (this.totalCreateSelectedPatients === 0) {
-        alert('Selected patient groups have no available active patients.');
+        this.$toastWarning('Selected patient groups have no available active patients.');
         return;
       }
 
@@ -286,7 +286,7 @@ export default {
         await this.loadCampaigns();
         await this.loadCategoryCounts();
         await this.viewCampaign(campaignId);
-        alert(`Campaign created and ${campaignStatus} with ${queuedCount} patients.`);
+        this.$toastSuccess(`Campaign created and ${campaignStatus} with ${queuedCount} patients.`);
       } catch (error) {
         console.error('Failed to create campaign:', error);
         if (campaignId) {
@@ -296,7 +296,7 @@ export default {
             console.error('Failed to rollback partial campaign:', cleanupError);
           }
         }
-        alert(error.response?.data?.error || 'Failed to create and schedule campaign');
+        this.$toastError(error.response?.data?.error || 'Failed to create and schedule campaign');
       } finally {
         this.creatingCampaign = false;
       }
@@ -320,9 +320,13 @@ export default {
     },
     
     async deleteCampaign(campaign) {
-      if (!confirm(`Delete campaign "${campaign.name}" and its call history? This action cannot be undone.`)) {
-        return;
-      }
+      const confirmed = await this.$confirmAction({
+        title: 'Delete campaign?',
+        text: `Delete campaign "${campaign.name}" and its call history? This action cannot be undone.`,
+        confirmButtonText: 'Yes, delete it',
+        cancelButtonText: 'Cancel'
+      });
+      if (!confirmed) return;
 
       try {
         await api.delete(`/campaigns/${campaign.id}`);
@@ -332,10 +336,10 @@ export default {
         }
         await this.loadCampaigns();
         await this.loadCategoryCounts();
-        alert('Campaign deleted successfully');
+        this.$toastSuccess('Campaign deleted successfully');
       } catch (error) {
         console.error('Failed to delete campaign:', error);
-        alert(error.response?.data?.error || 'Failed to delete campaign');
+        this.$toastError(error.response?.data?.error || 'Failed to delete campaign');
       }
     },
 
@@ -354,7 +358,7 @@ export default {
         this.selectedCampaign = response.data;
       } catch (error) {
         console.error('Failed to load campaign details:', error);
-        alert('Failed to load campaign details');
+        this.$toastError('Failed to load campaign details');
       }
     },
     
@@ -369,7 +373,7 @@ export default {
     copyPatientUrl(patientId, campaignId) {
       const url = this.getPatientCallUrl(patientId, campaignId);
       navigator.clipboard.writeText(url);
-      alert('Patient call URL copied! Open in a new browser tab to simulate patient phone.');
+      this.$toastSuccess('Patient call URL copied! Open in a new browser tab to simulate patient phone.');
     },
     
     openPatientUrl(patientId, campaignId) {

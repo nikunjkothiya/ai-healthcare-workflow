@@ -41,7 +41,13 @@ async function query(text, params) {
   try {
     const res = await pool.query(text, params);
     const duration = Date.now() - start;
-    console.log('Executed query', { text, duration, rows: res.rowCount });
+    const shouldLogSql =
+      String(process.env.LOG_SQL || '').toLowerCase() === 'true' ||
+      (process.env.NODE_ENV && process.env.NODE_ENV !== 'production');
+
+    if (shouldLogSql) {
+      console.log('Executed query', { text, duration, rows: res.rowCount });
+    }
     return res;
   } catch (err) {
     console.error('Query error:', err);

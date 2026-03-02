@@ -113,7 +113,7 @@ export default {
         this.patients = (response.data.patients || []).map((patient) => this.mapPatient(patient));
       } catch (error) {
         console.error('Failed to load patients for call links:', error);
-        alert('Failed to load patient links');
+        this.$toastError('Failed to load patient links');
       }
     },
     mapPatient(patient) {
@@ -149,7 +149,7 @@ export default {
     copyLink(patientId) {
       const link = this.getCallLink(patientId);
       navigator.clipboard.writeText(link);
-      alert('Link copied! Open in a new browser/tab to simulate patient phone.');
+      this.$toastSuccess('Link copied! Open in a new browser/tab to simulate patient phone.');
     },
     openLink(patientId) {
       const link = this.getCallLink(patientId);

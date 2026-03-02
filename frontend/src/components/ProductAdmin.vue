@@ -433,9 +433,9 @@ export default {
         this.newHospital = { name: '' };
         await this.loadOrganizations();
         await this.loadAnalytics();
-        alert('Hospital created successfully!');
+        this.$toastSuccess('Hospital created successfully!');
       } catch (error) {
-        alert('Failed to create hospital: ' + (error.response?.data?.error || error.message));
+        this.$toastError('Failed to create hospital: ' + (error.response?.data?.error || error.message));
       }
     },
     openEditHospital(org) {
@@ -454,9 +454,9 @@ export default {
         this.editHospital = { id: null, name: '' };
         await this.loadOrganizations();
         await this.loadAnalytics();
-        alert('Hospital updated successfully!');
+        this.$toastSuccess('Hospital updated successfully!');
       } catch (error) {
-        alert('Failed to update hospital: ' + (error.response?.data?.error || error.message));
+        this.$toastError('Failed to update hospital: ' + (error.response?.data?.error || error.message));
       }
     },
     async confirmDeleteHospital(org) {
@@ -472,9 +472,9 @@ export default {
         }
         await this.loadOrganizations();
         await this.loadAnalytics();
-        alert('Hospital deleted successfully.');
+        this.$toastSuccess('Hospital deleted successfully.');
       } catch (error) {
-        alert('Failed to delete hospital: ' + (error.response?.data?.error || error.message));
+        this.$toastError('Failed to delete hospital: ' + (error.response?.data?.error || error.message));
       }
     },
     async viewHospital(orgId) {
@@ -504,11 +504,11 @@ export default {
           recentEvents: response.data.recentEvents || []
         };
       } catch (error) {
-        alert('Failed to load hospital details');
+        this.$toastError('Failed to load hospital details');
       }
     },
     saveOrchestrationConfig() {
-      alert('Configuration saved! (This would update environment variables in production)');
+      this.$toastInfo('Configuration saved! (This would update environment variables in production)');
     },
     formatDate(dateString) {
       return new Date(dateString).toLocaleDateString();

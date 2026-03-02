@@ -21,6 +21,11 @@ The container loads model files from explicit local paths:
 
 All of them point to files under `/models/tts/` (mounted from `./models/tts/`).
 
+The backend TTS service:
+- Normalizes text to sentence-level speech and **splits long replies into multiple sentences** before synthesis.
+- Caps synthesis to the first 2–3 sentences per turn to keep latency predictable for live calls.
+- Caches short/common phrases in memory so repeated closings and confirmations play back instantly once generated the first time.
+
 ## Git Tracking Policy
 
 Only `README.md` is tracked from this folder.

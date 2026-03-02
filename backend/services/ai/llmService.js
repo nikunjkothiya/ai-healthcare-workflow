@@ -1083,9 +1083,10 @@ Return ONLY JSON:
       model: this.chatModel,
       validator: validateRealtimeTurn,
       generationOptions: {
-        temperature: 0.3,
-        top_p: 0.85,
-        max_tokens: 200,
+        // Slightly lower temperature and token count for more stable, faster realtime replies.
+        temperature: 0.25,
+        top_p: 0.8,
+        max_tokens: 160,
         num_ctx: parseInt(process.env.LLM_NUM_CTX_REALTIME, 10) || 1536,
         stop: ['```', '\nPatient:', '\nAssistant:'],
         keep_alive: '30m',
@@ -1110,7 +1111,7 @@ Return ONLY JSON:
     const callMeta = this._sanitizeForPrompt(context.callMeta || {}, 900);
 
     const prompt = `You are a senior healthcare quality analyst.
-Analyze the completed call transcript and return ONLY valid JSON.
+Analyze the completed call transcript and return ONLY valid JSON in the schema below.
 
 CRITICAL RULES:
 1. Evidence-grounded analysis only. Never invent facts, dates, or times not in the transcript.
@@ -1121,6 +1122,7 @@ CRITICAL RULES:
 6. If transcript lacks explicit date/time spoken by patient, return null for confirmed_date/confirmed_time.
 7. Keep "summary" concise (1-2 sentences) and clinically meaningful.
 8. Do not provide medical diagnosis.
+9. Do NOT return the campaign or patient object. Only return a JSON object that has ALL of the keys listed below ("summary", "campaign_goal_achieved", etc.). Never return {id, name, script_template, schedule_time} as the top-level JSON.
 
 Return ONLY JSON:
 {
@@ -1158,7 +1160,8 @@ ${transcript}`;
         top_p: 0.8,
         max_tokens: 768,
         num_ctx: this.analysisNumCtx,
-        stop: ['```'],
+        // Avoid the model drifting back into dialogue-style markup.
+        stop: ['```', '\nPatient:', '\nAssistant:'],
         keep_alive: '15m',
         timeout_ms: parseInt(process.env.LLM_ANALYSIS_TIMEOUT_MS, 10) || 180000
       },

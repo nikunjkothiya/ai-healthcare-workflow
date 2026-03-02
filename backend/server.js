@@ -3,6 +3,7 @@ const cors = require('cors');
 const http = require('http');
 const dotenv = require('dotenv');
 const { initWebSocket } = require('./websocket');
+const llmService = require('./services/ai/llmService');
 const authRoutes = require('./routes/auth');
 const campaignRoutes = require('./routes/campaigns');
 const callRoutes = require('./routes/calls');
@@ -29,6 +30,16 @@ eventBus.listen().then(() => {
 
 // Make eventBus available globally
 global.eventBus = eventBus;
+
+// Best-effort LLM availability check on startup.
+// This does NOT block server startup but gives early visibility into model health.
+llmService.checkAvailability().then((ok) => {
+  if (!ok) {
+    console.warn('LLM availability check failed at startup. Live calls may be unavailable until models are healthy.');
+  }
+}).catch((err) => {
+  console.warn('LLM startup availability check threw an error:', err.message);
+});
 
 // Middleware
 app.use(cors());

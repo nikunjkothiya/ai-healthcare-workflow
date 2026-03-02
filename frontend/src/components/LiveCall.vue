@@ -138,7 +138,7 @@ export default {
               text: data.transcript
             });
             if (this.requireServerTts) {
-              alert('Voice service unavailable. Please retry the call.');
+              this.$toastError('Voice service unavailable. Please retry the call.');
               this.endCall();
               return;
             }
@@ -151,13 +151,13 @@ export default {
             this.callState = 'ended';
           } else if (data.type === 'error') {
             console.error('WebSocket error:', data.message);
-            alert('Error: ' + data.message);
+            this.$toastError('Error: ' + data.message);
           }
         };
         
         this.ws.onerror = (error) => {
           console.error('WebSocket error:', error);
-          alert('Connection error. Please try again.');
+          this.$toastError('Connection error. Please try again.');
           this.callState = 'idle';
         };
         
@@ -168,7 +168,7 @@ export default {
         };
       } catch (error) {
         console.error('Failed to start call:', error);
-        alert('Failed to start call. Please check your microphone permissions.');
+        this.$toastError('Failed to start call. Please check your microphone permissions.');
         this.callState = 'idle';
       }
     },
@@ -239,7 +239,7 @@ export default {
         this.mediaRecorder = { stream, source, captureNode, silentGain, flush };
       } catch (error) {
         console.error('Failed to start recording:', error);
-        alert('Microphone access denied. Please allow microphone access.');
+        this.$toastError('Microphone access denied. Please allow microphone access.');
         this.endCall();
       }
     },

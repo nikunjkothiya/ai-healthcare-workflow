@@ -1,6 +1,7 @@
 import { createApp } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import App from './App.vue';
+import { toastSuccess, toastError, toastInfo, toastWarning, confirmAction } from './notify';
 import Login from './components/Login.vue';
 import Dashboard from './components/Dashboard.vue';
 import LiveCall from './components/LiveCall.vue';
@@ -52,5 +53,12 @@ router.beforeEach((to, from, next) => {
 });
 
 const app = createApp(App);
+
+app.config.globalProperties.$toastSuccess = toastSuccess;
+app.config.globalProperties.$toastError = toastError;
+app.config.globalProperties.$toastInfo = toastInfo;
+app.config.globalProperties.$toastWarning = toastWarning;
+app.config.globalProperties.$confirmAction = confirmAction;
+
 app.use(router);
 app.mount('#app');

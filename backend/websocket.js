@@ -423,6 +423,29 @@ async function handleStartCall(sessionId, patientId) {
   if (!session) return;
 
   try {
+    // Ensure LLM is available before we invest in a full audio/STT/TTS call path.
+    if (llmService.available === null) {
+      try {
+        await llmService.checkAvailability();
+      } catch (checkErr) {
+        console.warn('LLM availability check during call start failed:', checkErr.message);
+      }
+    }
+
+    if (llmService.available === false) {
+      console.error('Start call aborted: LLM unavailable');
+      safeSend(session.ws, {
+        type: 'error',
+        message: 'Our AI assistant is temporarily unavailable. Please try again shortly.'
+      });
+      session.finalState = STATES.FAILED;
+      session.requiresFollowup = false;
+      await handleEndCall(sessionId, patientId).catch((endErr) => {
+        console.error('Failed to finalize call after LLM unavailability:', endErr);
+      });
+      return;
+    }
+
     session.patientId = normalizePatientId(patientId);
 
     // Save pre-generated greeting cache BEFORE clearing the pending ring
@@ -843,7 +866,8 @@ async function handleAudioChunk(sessionId, audioData) {
 
     const sttStartedAt = Date.now();
     const sttResult = await sttService.transcribeRealtime(audioPath, {
-      chunkMs: 1800,
+      // Use a slightly smaller chunk size so turns finalize a bit faster.
+      chunkMs: 1500,
       silenceThresholdMs: SILENCE_FINALIZE_MS
     });
     logLatency('STT', sttStartedAt);

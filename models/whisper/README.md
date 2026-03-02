@@ -14,6 +14,10 @@ Host path:      ./models/whisper/          ->  Container path: /models/whisper/
 
 So when `.env` says `WHISPER_MODEL_PATH=/models/whisper/ggml-small.en.bin`, it reads from this folder.
 
+At runtime, the STT pipeline is optimized for live calls:
+- The browser (`MobileCall` component) runs a lightweight VAD and only sends buffered utterances (not raw continuous audio) as WAV `audio_chunk`s over WebSocket.
+- The backend splits audio into overlapping chunks, deduplicates partial transcripts, and uses a trailing-silence detector to decide when to finalize a turn for the LLM.
+
 ## Git Tracking Policy
 
 Only `README.md` is tracked from this folder.

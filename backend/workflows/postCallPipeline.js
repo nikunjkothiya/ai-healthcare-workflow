@@ -31,15 +31,25 @@ class PostCallPipeline {
       if (transcript.length < this.minTranscriptLength) {
         strictAnalysis = this.buildInsufficientDataResult(transcript);
       } else {
-        strictAnalysis = await llmService.generatePostCallAnalysisStrict({
-          transcript,
-          patient: context.patient,
-          campaign: context.campaign,
-          callMeta: {
-            callId,
-            state: context.call.state || null
-          }
-        });
+        try {
+          strictAnalysis = await llmService.generatePostCallAnalysisStrict({
+            transcript,
+            patient: context.patient,
+            campaign: context.campaign,
+            callMeta: {
+              callId,
+              state: context.call.state || null
+            }
+          });
+        } catch (modelError) {
+          // Do not hard-fail the entire call if the model returns malformed JSON.
+          // Fall back to a heuristic, transcript-based result so dashboards still work.
+          console.warn(
+            `Post-call strict analysis failed for call ${callId}, falling back to heuristic result:`,
+            modelError.message
+          );
+          strictAnalysis = this.buildInsufficientDataResult(transcript);
+        }
       }
 
       const result = this.mapAnalysisToResult(strictAnalysis, transcript);

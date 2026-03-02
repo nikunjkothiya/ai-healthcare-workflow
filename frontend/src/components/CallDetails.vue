@@ -92,7 +92,7 @@ export default {
         this.call = response.data.call;
       } catch (error) {
         console.error('Failed to load call:', error);
-        alert('Failed to load call details');
+        this.$toastError('Failed to load call details');
         this.$router.back();
       } finally {
         this.loading = false;

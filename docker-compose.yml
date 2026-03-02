@@ -148,7 +148,7 @@ services:
       - WHISPER_PORT=9000
       - TTS_HOST=tts
       - TTS_PORT=5002
-      - REQUIRE_SERVER_TTS=true
+      - REQUIRE_SERVER_TTS=false
       - STT_CHUNK_MS=${STT_CHUNK_MS}
       - STT_SILENCE_MS=${STT_SILENCE_MS}
       - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME}
@@ -200,7 +200,7 @@ services:
       - WHISPER_PORT=9000
       - TTS_HOST=tts
       - TTS_PORT=5002
-      - REQUIRE_SERVER_TTS=true
+      - REQUIRE_SERVER_TTS=false
       - STT_CHUNK_MS=${STT_CHUNK_MS}
       - STT_SILENCE_MS=${STT_SILENCE_MS}
       - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME}
@@ -233,7 +233,7 @@ services:
     environment:
       - VITE_API_URL=http://localhost:4000
       - VITE_WS_URL=ws://localhost:4000
-      - VITE_REQUIRE_SERVER_TTS=true
+      - VITE_REQUIRE_SERVER_TTS=false
     depends_on:
       - backend
     deploy:

@@ -457,7 +457,7 @@ export default {
 
       if (data.type === 'error') {
         console.error('WebSocket error:', data.message);
-        alert('Error: ' + data.message);
+        this.$toastError('Error: ' + data.message);
         this.callState = 'ended';
         return;
       }
@@ -498,7 +498,7 @@ export default {
         await this.speakAssistantText(transcript);
       } else if (transcript && this.requireServerTts) {
         console.error('Expected ai_audio in production mode but received ai_response');
-        alert('Voice service unavailable. Please retry the call.');
+        this.$toastError('Voice service unavailable. Please retry the call.');
         this.handleCallEnd(data);
         return;
       }
@@ -579,7 +579,7 @@ export default {
     },
     rejectCall() {
       if (!this.incomingReady) {
-        alert('Call is not ringing yet. Please wait.');
+        this.$toastInfo('Call is not ringing yet. Please wait.');
         return;
       }
 
@@ -606,7 +606,7 @@ export default {
     },
     async acceptCall() {
       if (!this.incomingReady) {
-        alert('Call is not ready yet. Please wait for incoming ring.');
+        this.$toastInfo('Call is not ready yet. Please wait for incoming ring.');
         return;
       }
 
@@ -614,7 +614,7 @@ export default {
         await this.connectWebSocket();
       } catch (error) {
         console.error('Failed to connect WebSocket:', error);
-        alert('Connection error. Please try again.');
+        this.$toastError('Connection error. Please try again.');
         return;
       }
 
@@ -675,11 +675,12 @@ export default {
 
         const sampleRate = this.audioContext.sampleRate || 16000;
         const vadConfig = {
-          speechThreshold: 0.008,
-          silenceThreshold: 0.004,
-          minSpeechMs: 400,
-          endSilenceMs: 1100,
-          maxUtteranceMs: 15000
+          // Slightly lower thresholds so softer patient voices are picked up more reliably.
+          speechThreshold: 0.006,
+          silenceThreshold: 0.003,
+          minSpeechMs: 350,
+          endSilenceMs: 900,
+          maxUtteranceMs: 14000
         };
 
         const state = {
@@ -776,7 +777,7 @@ export default {
         this.mediaRecorder = { stream, source, captureNode, silentGain, flush, resetUtterance };
       } catch (error) {
         console.error('Failed to start recording:', error);
-        alert('Microphone access denied. Please allow microphone access.');
+        this.$toastError('Microphone access denied. Please allow microphone access.');
         this.resetCall();
       }
     },
@@ -1006,7 +1007,7 @@ export default {
     },
     copyLink() {
       navigator.clipboard.writeText(this.testLink);
-      alert('Link copied! Open on your mobile device to test.');
+      this.$toastSuccess('Link copied! Open on your mobile device to test.');
     }
   }
 };

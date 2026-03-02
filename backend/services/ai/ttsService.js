@@ -79,7 +79,11 @@ class TTSService {
       .split(/(?<=[.!?])\s+/)
       .map(s => s.trim())
       .filter(s => s.length > 0);
-    return sentences.length > 0 ? sentences : [text];
+    if (sentences.length === 0) {
+      return [text];
+    }
+    // Hard-cap to a small number of sentences per synthesis call to keep latency predictable.
+    return sentences.slice(0, 3);
   }
 
   /**

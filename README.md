@@ -582,6 +582,7 @@ Only `README.md` files are committed under `models/`; model assets must be provi
 - Chunking: ~2.5s realtime chunks with deduplicated partial updates
 - Silence finalization: ~800ms before LLM turn submission
 - Runs in Docker container via `whisper-server` on port `9000` (`/inference`)
+- Frontend `MobileCall` uses a client-side VAD + utterance buffer so only speech segments (not raw streaming audio) are encoded to WAV and sent as `audio_chunk`s to the backend, which reduces STT load and latency
 - **No model downloads during build** — model is mounted to `/models/whisper/` inside container.
 
 **Ollama (LLM in Docker):**
@@ -597,6 +598,7 @@ Only `README.md` files are committed under `models/`; model assets must be provi
 - Container starts with explicit local file paths (`TTS_MODEL_PATH`, `TTS_CONFIG_PATH`, `TTS_VOCODER_PATH`, `TTS_VOCODER_CONFIG_PATH`).
 - Backend enforces server-generated voice when `REQUIRE_SERVER_TTS=true`
 - **No model downloads during build or startup** - models load directly from host mount.
+- Backend TTS service splits long replies into sentences and now hard-caps synthesis to the first 2–3 spoken sentences per turn, which keeps latency stable while preserving natural conversational flow.
 
 ---
 
