@@ -49,21 +49,21 @@ router.get('/', authenticateToken, async (req, res) => {
 // Create campaign
 router.post('/', authenticateToken, async (req, res) => {
   try {
-    const { name, script_template, opening_prompt, schedule_time, retry_limit } = req.body;
+    const { name, script_template, opening_prompt, schedule_time, retry_limit, campaign_type } = req.body;
 
     // Input validation
     if (!name || typeof name !== 'string') {
       return res.status(400).json({ error: 'Campaign name required and must be a string' });
     }
-    
+
     if (name.length < 3 || name.length > 255) {
       return res.status(400).json({ error: 'Campaign name must be between 3 and 255 characters' });
     }
-    
+
     if (opening_prompt && (opening_prompt.length < 10 || opening_prompt.length > 500)) {
       return res.status(400).json({ error: 'Opening prompt must be between 10 and 500 characters' });
     }
-    
+
     if (retry_limit !== undefined && retry_limit !== null && (typeof retry_limit !== 'number' || retry_limit < 0 || retry_limit > 10)) {
       return res.status(400).json({ error: 'Retry limit must be a number between 0 and 10' });
     }
@@ -74,14 +74,18 @@ router.post('/', authenticateToken, async (req, res) => {
     const defaultFollowupKeywords = ['call back', 'later', 'not now', 'busy', 'another time', 'not good time'];
     const defaultConfirmationKeywords = ['yes', 'confirm', 'correct', 'sure', 'okay', 'sounds good', 'that works'];
 
+    const validCampaignTypes = ['appointment_confirmation', 'medicine_reminder', 'health_report', 'feedback_collection', 'post_discharge_followup', 'general_outreach'];
+    const selectedCampaignType = validCampaignTypes.includes(campaign_type) ? campaign_type : 'appointment_confirmation';
+
     const result = await query(
-      `INSERT INTO campaigns (organization_id, user_id, name, status, script_template, schedule_time, retry_limit) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      `INSERT INTO campaigns (organization_id, user_id, name, status, campaign_type, script_template, schedule_time, retry_limit) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [
-        req.user.organizationId, 
-        req.user.id, 
-        name, 
+        req.user.organizationId,
+        req.user.id,
+        name,
         'pending',
+        selectedCampaignType,
         opening_prompt || defaultOpening,
         schedule_time || null,
         retry_limit ?? 3
@@ -91,13 +95,14 @@ router.post('/', authenticateToken, async (req, res) => {
     // Create default agent config for this campaign
     await query(
       `INSERT INTO agent_configs (
-        organization_id, campaign_id, greeting_script, prompt_template,
+        organization_id, campaign_id, campaign_type, greeting_script, prompt_template,
         end_keywords, followup_keywords, confirmation_keywords
       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         req.user.organizationId,
         result.rows[0].id,
+        selectedCampaignType,
         opening_prompt || defaultOpening,
         script_template || "You are a friendly healthcare assistant calling to confirm appointments. Keep responses brief, natural, and empathetic.",
         defaultEndKeywords,
@@ -269,13 +274,13 @@ router.post('/:id/start', authenticateToken, async (req, res) => {
        WHERE id = $2 AND status IN ('pending', 'scheduled')`,
       [baseDelayMs > 0 ? 'scheduled' : 'running', campaignId]
     );
-    
+
     // Check if update succeeded
     const statusCheck = await query(
       'SELECT status FROM campaigns WHERE id = $1',
       [campaignId]
     );
-    
+
     if (statusCheck.rows[0]?.status === 'running' && baseDelayMs === 0) {
       // Campaign already running, check if it was just started by us or by another request
       const existingJobs = await query(
@@ -283,9 +288,9 @@ router.post('/:id/start', authenticateToken, async (req, res) => {
          WHERE campaign_id = $1 AND status = 'queued'`,
         [campaignId]
       );
-      
+
       if (existingJobs.rows[0]?.count > 0) {
-        return res.status(400).json({ 
+        return res.status(400).json({
           error: 'Campaign already started',
           message: 'This campaign is already running. Please wait for it to complete.'
         });
@@ -313,6 +318,7 @@ router.post('/:id/start', authenticateToken, async (req, res) => {
           organizationId: req.user.organizationId,
           scheduledFor,
           callMode,
+          campaignType: campaign.campaign_type || 'appointment_confirmation',
           retryAttempt: 0,
           maxRetries: campaign.retry_limit ?? 3
         },
@@ -324,7 +330,7 @@ router.post('/:id/start', authenticateToken, async (req, res) => {
         patientName: patient.name,
         path: `/mobile-call?patient=${patient.id}&campaign=${campaignId}`
       });
-      
+
       // Emit queued event
       await eventBus.emit(EVENTS.CALL_QUEUED, {
         campaignId,

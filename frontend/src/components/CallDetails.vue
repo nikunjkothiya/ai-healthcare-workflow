@@ -36,7 +36,7 @@
       </div>
       
       <div class="structured-section">
-        <h2>Structured Output</h2>
+        <h2>Analysis Results</h2>
         <div class="structured-grid">
           <div class="structured-item">
             <strong>Appointment Confirmed:</strong>
@@ -46,6 +46,22 @@
             <strong>Callback Requested:</strong>
             {{ call.requested_callback ? '✅ Yes' : '❌ No' }}
           </div>
+          <div class="structured-item">
+            <strong>Campaign Goal Achieved:</strong>
+            {{ call.campaign_goal_achieved ? '✅ Yes' : '❌ No' }}
+          </div>
+          <div class="structured-item">
+            <strong>Urgency:</strong>
+            <span :class="'urgency-badge ' + (call.urgency || 'routine')">
+              {{ call.urgency || 'routine' }}
+            </span>
+          </div>
+        </div>
+        <div v-if="parsedActionItems.length > 0" class="action-items-box">
+          <strong>📝 Action Items:</strong>
+          <ul>
+            <li v-for="(item, index) in parsedActionItems" :key="index">{{ item }}</li>
+          </ul>
         </div>
         <div class="summary-box">
           <strong>Summary:</strong>
@@ -80,6 +96,16 @@ export default {
       call: null,
       loading: true
     };
+  },
+  computed: {
+    parsedActionItems() {
+      if (!this.call) return [];
+      let items = this.call.action_items;
+      if (typeof items === 'string') {
+        try { items = JSON.parse(items); } catch (e) { return []; }
+      }
+      return Array.isArray(items) ? items : [];
+    }
   },
   async mounted() {
     await this.loadCall();
@@ -254,5 +280,53 @@ h2 {
   font-family: 'Courier New', monospace;
   font-size: 0.9rem;
   line-height: 1.6;
+}
+
+.urgency-badge {
+  padding: 0.2rem 0.6rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.urgency-badge.routine {
+  background: #d4edda;
+  color: #155724;
+}
+
+.urgency-badge.urgent {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.urgency-badge.critical {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.action-items-box {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: #fff8e1;
+  border-radius: 6px;
+  border-left: 4px solid #ffa000;
+}
+
+.action-items-box strong {
+  display: block;
+  margin-bottom: 0.75rem;
+  color: #e65100;
+}
+
+.action-items-box ul {
+  margin: 0;
+  padding-left: 1.5rem;
+}
+
+.action-items-box li {
+  padding: 0.25rem 0;
+  color: #34495e;
+  line-height: 1.5;
 }
 </style>

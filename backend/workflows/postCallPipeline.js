@@ -120,6 +120,7 @@ class PostCallPipeline {
          p.metadata AS patient_metadata,
          cam.id AS campaign_id,
          cam.name AS campaign_name,
+         cam.campaign_type AS campaign_type,
          cam.script_template AS campaign_script_template,
          cam.schedule_time AS campaign_schedule_time
        FROM calls c
@@ -153,6 +154,7 @@ class PostCallPipeline {
       campaign: {
         id: row.campaign_id,
         name: row.campaign_name,
+        campaign_type: row.campaign_type || 'appointment_confirmation',
         script_template: row.campaign_script_template || '',
         schedule_time: row.campaign_schedule_time || null
       }
@@ -202,25 +204,36 @@ class PostCallPipeline {
     const requiresFollowup = Boolean(requiresManualFollowup || strict.risk_level === 'high');
     const analysisStatus = transcript.length < this.minTranscriptLength ? 'insufficient_data' : 'completed';
 
+    // Determine analysis model identifier for tracking
+    const analysisModelId = llmService.isGemini
+      ? (llmService.geminiAnalysisModel || 'gemini-2.0-flash')
+      : (llmService.analysisModel || 'healthcare-analysis');
+
     return {
       structured_output: {
         ...strict,
         appointment_confirmed: appointmentConfirmed,
         analysis_status: analysisStatus,
-        analysis_model: llmService.analysisModel,
+        analysis_model: analysisModelId,
 
         // Backward-compatible keys used by existing dashboards/routes.
         requested_callback: requestedCallback,
         requires_followup: requiresFollowup,
         requires_manual_followup: requiresManualFollowup,
-        barrier_type: 'none',
-        barrier_notes: strict.risk_flags.join(', ').slice(0, 260)
+        barrier_type: strict.barrier_type || 'none',
+        barrier_notes: Array.isArray(strict.risk_flags) ? strict.risk_flags.join(', ').slice(0, 260) : '',
+        action_items: Array.isArray(strict.action_items) ? strict.action_items : [],
+        urgency: strict.urgency || 'routine',
+        patient_concerns: Array.isArray(strict.patient_concerns) ? strict.patient_concerns : []
       },
       sentiment: strict.sentiment,
       summary: strict.summary,
       appointment_confirmed: appointmentConfirmed,
       requested_callback: requestedCallback,
-      requires_followup: requiresFollowup
+      requires_followup: requiresFollowup,
+      campaign_goal_achieved: Boolean(strict.campaign_goal_achieved),
+      action_items: Array.isArray(strict.action_items) ? strict.action_items : [],
+      urgency: strict.urgency || 'routine'
     };
   }
 
@@ -237,14 +250,20 @@ class PostCallPipeline {
            summary = $3,
            appointment_confirmed = $4,
            requested_callback = $5,
+           campaign_goal_achieved = $6,
+           action_items = $7,
+           urgency = $8,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $6`,
+       WHERE id = $9`,
       [
         JSON.stringify(result.structured_output || {}),
         result.sentiment || 'neutral',
         result.summary || '',
         Boolean(result.appointment_confirmed),
         Boolean(result.requested_callback),
+        Boolean(result.campaign_goal_achieved),
+        JSON.stringify(result.action_items || []),
+        result.urgency || 'routine',
         callId
       ]
     );

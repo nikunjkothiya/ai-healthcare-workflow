@@ -35,6 +35,9 @@ All large AI model files live in the `models/` directory. Each subfolder has its
 Model assets are not committed to git in this project.
 Only `README.md` files are tracked under `models/`, so each user must place model files locally in the correct folders.
 
+> **Note:** When using Gemini API as the LLM provider (default), you do NOT need any Ollama model files.
+> Only Whisper and TTS model files are required.
+
 > **IMPORTANT — Host vs Container paths:**
 > The `.env` file uses **container paths** (inside Docker), not host paths.
 > Docker mounts transform your local directories into container paths:
@@ -80,7 +83,23 @@ TTS_VOCODER_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file
 TTS_VOCODER_CONFIG_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json
 ```
 
-### C. Ollama (LLM in Docker)
+### C. LLM — Gemini API (Primary, Default)
+
+Set in `.env`:
+```bash
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_real_api_key_here
+GEMINI_MODEL_CHAT=gemini-2.0-flash
+GEMINI_MODEL_ANALYSIS=gemini-2.0-flash
+GEMINI_MODEL_DECISION=gemini-2.0-flash
+```
+
+No local model files needed — all LLM inference runs via the Gemini API.
+Get your API key from [Google AI Studio](https://aistudio.google.com/apikey).
+
+### D. LLM — Ollama (Optional Fallback)
+
+To use local models instead of Gemini, set `LLM_PROVIDER=ollama` in `.env`.
 
 Place GGUF files in `models/ollama/`:
 ```bash
@@ -90,12 +109,14 @@ models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
 
 Verify `.env` has matching model file paths:
 ```bash
+LLM_PROVIDER=ollama
 OLLAMA_URL=http://ollama:11434
 OLLAMA_MODEL_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
 OLLAMA_MODEL_CHAT_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
 OLLAMA_MODEL_ANALYSIS_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
 OLLAMA_MODEL_DECISION_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
 ```
+Start with `docker compose --profile ollama up -d` to include the Ollama container.
 Internal tags are fixed in code/startup script: `healthcare-base`, `healthcare-chat`, `healthcare-analysis`, `healthcare-decision`.
 On every Ollama container start, these tags are refreshed from `OLLAMA_MODEL*_PATH` files.
 ---
@@ -111,7 +132,8 @@ Wait for all containers to be healthy:
 docker ps
 ```
 
-You should see 8 containers: `frontend`, `backend`, `worker`, `postgres`, `redis`, `whisper`, `tts`, `ollama` - all `Up (healthy)`.
+You should see 7 containers: `frontend`, `backend`, `worker`, `postgres`, `redis`, `whisper`, `tts` — all `Up (healthy)`.
+(If using Ollama: 8 containers including `ollama`)
 
 - **Dashboard**: [http://localhost:3000](http://localhost:3000)
 - **API**: [http://localhost:4000](http://localhost:4000)

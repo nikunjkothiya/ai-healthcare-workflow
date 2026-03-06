@@ -18,6 +18,8 @@ ai/whisper/audio/*.wav
 ai/sample_audio/*.wav
 !ai/sample_audio/README.md
 
+gemini-api-keys
+
 # Database
 *.db
 *.sqlite

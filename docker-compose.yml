@@ -44,6 +44,8 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: healthcare_ollama
+    profiles:
+      - ollama
     ports:
       - "11434:11434"
     environment:
@@ -127,44 +129,55 @@ services:
     ports:
       - "4000:4000"
     environment:
-      - NODE_ENV=production
-      - DB_HOST=postgres
-      - DB_USER=postgres
-      - DB_PASS=postgres
-      - DB_NAME=healthcare
-      - DB_PORT=5432
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - JWT_SECRET=supersecret_change_in_production
-      - OLLAMA_URL=http://ollama:11434
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS}
-      - LLM_NUM_CTX=${LLM_NUM_CTX}
-      - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS}
-      - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS}
-      - CALL_SPACING_MS=15000
-      - RING_TIMEOUT_MS=30000
-      - AUDIO_TMP_DIR=/tmp/healthcare_audio
-      - WHISPER_HOST=whisper
-      - WHISPER_PORT=9000
-      - TTS_HOST=tts
-      - TTS_PORT=5002
-      - REQUIRE_SERVER_TTS=false
-      - STT_CHUNK_MS=${STT_CHUNK_MS}
-      - STT_SILENCE_MS=${STT_SILENCE_MS}
-      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME}
-      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS}
-      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH}
-      - MAX_CALL_DURATION_MS=600000
-      - MAX_CONVERSATION_TURNS=30
-      - MAX_RUNTIME_RAM_GB=14
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=${PORT:-4000}
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASS=${DB_PASS:-postgres}
+      - DB_NAME=${DB_NAME:-healthcare}
+      - DB_PORT=${DB_PORT:-5432}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - JWT_SECRET=${JWT_SECRET:-supersecret_change_in_production}
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL_CHAT=${GEMINI_MODEL_CHAT:-gemini-2.0-flash}
+      - GEMINI_MODEL_ANALYSIS=${GEMINI_MODEL_ANALYSIS:-gemini-2.0-flash}
+      - GEMINI_MODEL_DECISION=${GEMINI_MODEL_DECISION:-gemini-2.0-flash}
+      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+      - OLLAMA_MODEL_PATH=${OLLAMA_MODEL_PATH}
+      - OLLAMA_MODEL_CHAT_PATH=${OLLAMA_MODEL_CHAT_PATH}
+      - OLLAMA_MODEL_ANALYSIS_PATH=${OLLAMA_MODEL_ANALYSIS_PATH}
+      - OLLAMA_MODEL_DECISION_PATH=${OLLAMA_MODEL_DECISION_PATH}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-200}
+      - LLM_NUM_CTX=${LLM_NUM_CTX:-1536}
+      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME:-1536}
+      - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS:-768}
+      - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS:-4096}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-45000}
+      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-60000}
+      - LLM_ANALYSIS_TIMEOUT_MS=${LLM_ANALYSIS_TIMEOUT_MS:-180000}
+      - LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS=${LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS:-18000}
+      - CALL_SPACING_MS=${CALL_SPACING_MS:-15000}
+      - RING_TIMEOUT_MS=${RING_TIMEOUT_MS:-30000}
+      - AUDIO_TMP_DIR=${AUDIO_TMP_DIR:-/tmp/healthcare_audio}
+      - WHISPER_HOST=${WHISPER_HOST:-whisper}
+      - WHISPER_PORT=${WHISPER_PORT:-9000}
+      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en.bin}
+      - TTS_HOST=${TTS_HOST:-tts}
+      - TTS_PORT=${TTS_PORT:-5002}
+      - REQUIRE_SERVER_TTS=${REQUIRE_SERVER_TTS:-true}
+      - STT_CHUNK_MS=${STT_CHUNK_MS:-2500}
+      - STT_SILENCE_MS=${STT_SILENCE_MS:-800}
+      - MAX_CALL_DURATION_MS=${MAX_CALL_DURATION_MS:-600000}
+      - MAX_CONVERSATION_TURNS=${MAX_CONVERSATION_TURNS:-30}
+      - MAX_RUNTIME_RAM_GB=${MAX_RUNTIME_RAM_GB:-14}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       tts:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     deploy:
       resources:
@@ -179,40 +192,50 @@ services:
       dockerfile: ./worker/Dockerfile
     container_name: healthcare_worker
     environment:
-      - NODE_ENV=production
-      - DB_HOST=postgres
-      - DB_USER=postgres
-      - DB_PASS=postgres
-      - DB_NAME=healthcare
-      - DB_PORT=5432
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - OLLAMA_URL=http://ollama:11434
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS}
-      - LLM_NUM_CTX=${LLM_NUM_CTX}
-      - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS}
-      - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS}
-      - WORKER_CONCURRENCY=1
-      - CALL_SPACING_MS=15000
-      - WEBSOCKET_CALL_MAX_WAIT_MS=720000
-      - POST_CALL_ANALYSIS_MAX_WAIT_MS=90000
-      - WHISPER_HOST=whisper
-      - WHISPER_PORT=9000
-      - TTS_HOST=tts
-      - TTS_PORT=5002
-      - REQUIRE_SERVER_TTS=false
-      - STT_CHUNK_MS=${STT_CHUNK_MS}
-      - STT_SILENCE_MS=${STT_SILENCE_MS}
-      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME}
-      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS}
-      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH}
-      - MAX_RUNTIME_RAM_GB=14
+      - NODE_ENV=${NODE_ENV:-production}
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASS=${DB_PASS:-postgres}
+      - DB_NAME=${DB_NAME:-healthcare}
+      - DB_PORT=${DB_PORT:-5432}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL_CHAT=${GEMINI_MODEL_CHAT:-gemini-2.0-flash}
+      - GEMINI_MODEL_ANALYSIS=${GEMINI_MODEL_ANALYSIS:-gemini-2.0-flash}
+      - GEMINI_MODEL_DECISION=${GEMINI_MODEL_DECISION:-gemini-2.0-flash}
+      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+      - OLLAMA_MODEL_PATH=${OLLAMA_MODEL_PATH}
+      - OLLAMA_MODEL_CHAT_PATH=${OLLAMA_MODEL_CHAT_PATH}
+      - OLLAMA_MODEL_ANALYSIS_PATH=${OLLAMA_MODEL_ANALYSIS_PATH}
+      - OLLAMA_MODEL_DECISION_PATH=${OLLAMA_MODEL_DECISION_PATH}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-200}
+      - LLM_NUM_CTX=${LLM_NUM_CTX:-1536}
+      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME:-1536}
+      - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS:-768}
+      - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS:-4096}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-45000}
+      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-60000}
+      - LLM_ANALYSIS_TIMEOUT_MS=${LLM_ANALYSIS_TIMEOUT_MS:-180000}
+      - LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS=${LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS:-18000}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-1}
+      - CALL_SPACING_MS=${CALL_SPACING_MS:-15000}
+      - WEBSOCKET_CALL_MAX_WAIT_MS=${WEBSOCKET_CALL_MAX_WAIT_MS:-720000}
+      - POST_CALL_ANALYSIS_MAX_WAIT_MS=${POST_CALL_ANALYSIS_MAX_WAIT_MS:-90000}
+      - WHISPER_HOST=${WHISPER_HOST:-whisper}
+      - WHISPER_PORT=${WHISPER_PORT:-9000}
+      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en.bin}
+      - TTS_HOST=${TTS_HOST:-tts}
+      - TTS_PORT=${TTS_PORT:-5002}
+      - REQUIRE_SERVER_TTS=${REQUIRE_SERVER_TTS:-true}
+      - STT_CHUNK_MS=${STT_CHUNK_MS:-2500}
+      - STT_SILENCE_MS=${STT_SILENCE_MS:-800}
+      - MAX_RUNTIME_RAM_GB=${MAX_RUNTIME_RAM_GB:-14}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     volumes:
       - ./ai/sample_audio:/sample_audio
@@ -233,7 +256,7 @@ services:
     environment:
       - VITE_API_URL=http://localhost:4000
       - VITE_WS_URL=ws://localhost:4000
-      - VITE_REQUIRE_SERVER_TTS=false
+      - VITE_REQUIRE_SERVER_TTS=${VITE_REQUIRE_SERVER_TTS:-true}
     depends_on:
       - backend
     deploy:

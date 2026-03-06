@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     status VARCHAR(50) DEFAULT 'pending',
+    campaign_type VARCHAR(50) DEFAULT 'appointment_confirmation',
     script_template TEXT,
     schedule_time TIMESTAMP,
     retry_limit INTEGER DEFAULT 3,
@@ -58,6 +59,9 @@ CREATE TABLE IF NOT EXISTS calls (
     state VARCHAR(50) DEFAULT 'scheduled',
     state_metadata JSONB,
     retry_count INTEGER DEFAULT 0,
+    campaign_goal_achieved BOOLEAN DEFAULT FALSE,
+    action_items JSONB DEFAULT '[]',
+    urgency VARCHAR(20) DEFAULT 'routine',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -75,6 +79,7 @@ CREATE TABLE IF NOT EXISTS agent_configs (
     id SERIAL PRIMARY KEY,
     organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
     campaign_id INTEGER REFERENCES campaigns(id) ON DELETE CASCADE,
+    campaign_type VARCHAR(50) DEFAULT 'appointment_confirmation',
     max_turns INTEGER DEFAULT 5,
     greeting_script TEXT,
     prompt_template TEXT,

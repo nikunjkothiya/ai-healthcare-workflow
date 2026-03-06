@@ -97,6 +97,17 @@ echo "=========================================="
 echo "Mode: $VERIFY_CALL_MODE"
 echo ""
 
+# Detect LLM provider from .env
+LLM_PROVIDER="gemini"
+if [ -f .env ]; then
+    ENV_PROVIDER=$(grep -E '^LLM_PROVIDER=' .env | tail -n 1 | cut -d '=' -f2- | tr -d '\r' | xargs)
+    if [ -n "$ENV_PROVIDER" ]; then
+        LLM_PROVIDER="$ENV_PROVIDER"
+    fi
+fi
+echo "LLM Provider: $LLM_PROVIDER"
+echo ""
+
 # Check if jq is installed
 if ! command -v jq &> /dev/null; then
     echo "jq is required for verify.sh but is not installed."
@@ -112,8 +123,11 @@ section "LAYER 1: Infrastructure & Services"
 
 info "Checking Docker services..."
 
-# Check each service
-SERVICES=("healthcare_db" "healthcare_redis" "healthcare_ollama" "healthcare_backend" "healthcare_worker" "healthcare_frontend" "healthcare_whisper" "healthcare_tts")
+# Build service list based on LLM provider
+SERVICES=("healthcare_db" "healthcare_redis" "healthcare_backend" "healthcare_worker" "healthcare_frontend" "healthcare_whisper" "healthcare_tts")
+if [ "$LLM_PROVIDER" = "ollama" ]; then
+    SERVICES+=("healthcare_ollama")
+fi
 
 for service in "${SERVICES[@]}"; do
     if docker ps | grep -q "$service"; then
@@ -147,26 +161,32 @@ else
     error "Redis connection failed"
 fi
 
-# Check Ollama
-info "Testing Ollama service..."
-if curl -s -f "http://localhost:11434/api/tags" > /dev/null 2>&1; then
-    success "Ollama is ready"
-else
-    error "Ollama connection failed"
-fi
-
-# Check registered Ollama model tags
-info "Checking required Ollama model tag(s)..."
-TAGS_JSON=$(curl -s "http://localhost:11434/api/tags")
-REQUIRED_MODELS=("healthcare-base" "healthcare-chat" "healthcare-analysis" "healthcare-decision")
-
-for model_name in "${REQUIRED_MODELS[@]}"; do
-    if model_exists_in_ollama "$model_name" "$TAGS_JSON"; then
-        success "Ollama model available: $model_name"
+# Check LLM Service
+if [ "$LLM_PROVIDER" = "ollama" ]; then
+    # Check Ollama
+    info "Testing Ollama service..."
+    if curl -s -f "http://localhost:11434/api/tags" > /dev/null 2>&1; then
+        success "Ollama is ready"
     else
-        error "Missing Ollama model: $model_name"
+        error "Ollama connection failed"
     fi
-done
+
+    # Check registered Ollama model tags
+    info "Checking required Ollama model tag(s)..."
+    TAGS_JSON=$(curl -s "http://localhost:11434/api/tags")
+    REQUIRED_MODELS=("healthcare-base" "healthcare-chat" "healthcare-analysis" "healthcare-decision")
+
+    for model_name in "${REQUIRED_MODELS[@]}"; do
+        if model_exists_in_ollama "$model_name" "$TAGS_JSON"; then
+            success "Ollama model available: $model_name"
+        else
+            error "Missing Ollama model: $model_name"
+        fi
+    done
+else
+    info "Using Gemini API as LLM provider (skipping Ollama checks)"
+    success "Gemini LLM provider configured"
+fi
 
 # ============================================
 # LAYER 2: Database Schema Verification
@@ -283,7 +303,8 @@ RESPONSE=$(curl -s -X POST "$API_URL/campaigns" \
     -H "Content-Type: application/json" \
     -d '{
         "name":"Verification Test Campaign",
-        "script_template":"Hello, I am calling from City General Hospital to confirm your appointment.",
+        "campaign_type":"appointment_confirmation",
+        "opening_prompt":"Hello, I am calling from City General Hospital to confirm your appointment.",
         "schedule_time":null,
         "retry_limit":0
     }')

@@ -105,16 +105,20 @@ class AgentController {
    */
   async loadAgentConfig(patientId) {
     try {
-      // Try to load patient-specific config
+      // Try to load patient-specific config with campaign type
       const result = await query(
-        `SELECT ac.* FROM agent_configs ac
+        `SELECT ac.*, c.campaign_type as campaign_campaign_type FROM agent_configs ac
          JOIN patients p ON p.campaign_id = ac.campaign_id
+         LEFT JOIN campaigns c ON c.id = ac.campaign_id
          WHERE p.id = $1`,
         [patientId]
       );
 
       if (result.rows.length > 0) {
-        return result.rows[0];
+        const config = result.rows[0];
+        // Use campaign_type from agent_config or fallback to campaign's type
+        config.campaign_type = config.campaign_type || config.campaign_campaign_type || 'appointment_confirmation';
+        return config;
       }
 
       // Return default config
@@ -417,13 +421,17 @@ REMEMBER: You are here to help, not to pressure. If patient is busy or uncomfort
   }
 
   /**
-   * Build contextual prompt based on patient info
+   * Build contextual prompt based on patient info and campaign type
    * @param {object} patient - Patient info
    * @param {object} config - Agent config
    * @returns {string} Contextual prompt
    */
   buildContextualPrompt(patient, config) {
     let prompt = config.prompt_template || this.getDefaultConfig().prompt_template;
+    const campaignType = config.campaign_type || 'appointment_confirmation';
+
+    // Add campaign-type context
+    prompt += `\n\nCAMPAIGN TYPE: ${campaignType.replace(/_/g, ' ')}`;
 
     // Add patient-specific context
     prompt += '\n\nCURRENT PATIENT CONTEXT:';
@@ -447,8 +455,8 @@ REMEMBER: You are here to help, not to pressure. If patient is busy or uncomfort
         prompt += `\n- Scheduled Date: ${metadata.appointment_date}`;
       }
 
-      if (metadata.doctor) {
-        prompt += `\n- Doctor: ${metadata.doctor}`;
+      if (metadata.doctor || metadata.doctor_name) {
+        prompt += `\n- Doctor: ${metadata.doctor || metadata.doctor_name}`;
       }
 
       // Medical context (for awareness, not discussion)
@@ -490,9 +498,44 @@ REMEMBER: You are here to help, not to pressure. If patient is busy or uncomfort
   }
 
   /**
+   * Get campaign-type-specific default greeting
+   * @param {string} campaignType - Campaign type
+   * @param {string} patientName - Patient first name
+   * @param {object} metadata - Patient metadata
+   * @returns {string|null} Greeting or null if no type-specific greeting
+   */
+  getCampaignTypeGreeting(campaignType, patientName, metadata = {}) {
+    const name = patientName ? ` ${patientName}` : '';
+    const doctor = metadata.doctor_name || metadata.doctor || '';
+    const date = metadata.appointment_date || '';
+    const appointmentType = metadata.appointment_type || '';
+
+    switch (campaignType) {
+      case 'medicine_reminder':
+        return `Hello${name}, this is the healthcare center. I'm calling to check in about your medication and make sure everything is going well. Do you have a moment?`;
+
+      case 'health_report':
+        return `Hello${name}, this is the healthcare center calling about your recent health report${doctor ? ` from ${doctor}` : ''}. Do you have a few minutes? I'd like to share some information with you.`;
+
+      case 'feedback_collection':
+        return `Hello${name}, this is the healthcare center. We'd love to hear about your recent experience with us. Do you have a couple of minutes to share your feedback?`;
+
+      case 'post_discharge_followup':
+        return `Hello${name}, this is the healthcare center. We're calling to check on how you're doing since your recent visit. How are you feeling today?`;
+
+      case 'general_outreach':
+        return `Hello${name}, this is the healthcare center reaching out for a wellness check-in. Do you have a moment to talk?`;
+
+      case 'appointment_confirmation':
+      default:
+        return null; // Use existing metadata-based greeting logic
+    }
+  }
+
+  /**
    * Get greeting message for call start.
    * Uses the campaign's script_template as primary greeting, with patient variable substitution.
-   * Falls back to metadata-based greeting only when no campaign script exists.
+   * Falls back to campaign-type-specific greeting, then to metadata-based greeting.
    * @param {number} patientId - Patient ID
    * @returns {Promise<string>} Greeting message
    */
@@ -512,16 +555,18 @@ REMEMBER: You are here to help, not to pressure. If patient is busy or uncomfort
       }
     }
 
-    // Try to load campaign script_template for this patient
+    // Try to load campaign script_template and campaign_type for this patient
     let campaignScript = '';
+    let campaignType = 'appointment_confirmation';
     try {
       if (patient?.campaign_id) {
         const campaignResult = await query(
-          'SELECT script_template FROM campaigns WHERE id = $1',
+          'SELECT script_template, campaign_type FROM campaigns WHERE id = $1',
           [patient.campaign_id]
         );
         if (campaignResult.rows.length > 0) {
           campaignScript = String(campaignResult.rows[0].script_template || '').trim();
+          campaignType = campaignResult.rows[0].campaign_type || 'appointment_confirmation';
         }
       }
     } catch (err) {
@@ -547,11 +592,17 @@ REMEMBER: You are here to help, not to pressure. If patient is busy or uncomfort
       return greeting.trim();
     }
 
+    // Try campaign-type-specific greeting
+    const typeGreeting = this.getCampaignTypeGreeting(campaignType, patientName, metadata);
+    if (typeGreeting) {
+      return typeGreeting;
+    }
+
     // Fallback: build greeting from patient metadata when no campaign script
-    if (metadata.appointment_type && metadata.appointment_date && metadata.doctor) {
-      return `Hello${patientName ? ' ' + patientName : ''}, this is the healthcare center calling about your ${metadata.appointment_type} appointment with ${metadata.doctor} on ${metadata.appointment_date}. Do you have a moment to confirm?`;
-    } else if (metadata.appointment_date && metadata.doctor) {
-      return `Hello${patientName ? ' ' + patientName : ''}, I'm calling from the healthcare center to confirm your appointment with ${metadata.doctor} on ${metadata.appointment_date}. Is now a good time?`;
+    if (metadata.appointment_type && metadata.appointment_date && (metadata.doctor || metadata.doctor_name)) {
+      return `Hello${patientName ? ' ' + patientName : ''}, this is the healthcare center calling about your ${metadata.appointment_type} appointment with ${metadata.doctor || metadata.doctor_name} on ${metadata.appointment_date}. Do you have a moment to confirm?`;
+    } else if (metadata.appointment_date && (metadata.doctor || metadata.doctor_name)) {
+      return `Hello${patientName ? ' ' + patientName : ''}, I'm calling from the healthcare center to confirm your appointment with ${metadata.doctor || metadata.doctor_name} on ${metadata.appointment_date}. Is now a good time?`;
     } else if (metadata.appointment_date) {
       return `Hello${patientName ? ' ' + patientName : ''}, I'm calling from the healthcare center about your upcoming appointment on ${metadata.appointment_date}. Can we confirm your appointment?`;
     }

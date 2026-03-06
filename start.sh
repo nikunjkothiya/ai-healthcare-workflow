@@ -94,6 +94,11 @@ DB_PORT=5432
 REDIS_HOST=redis
 REDIS_PORT=6379
 JWT_SECRET=supersecret_change_in_production
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
+GEMINI_MODEL_CHAT=gemini-2.0-flash
+GEMINI_MODEL_ANALYSIS=gemini-2.0-flash
+GEMINI_MODEL_DECISION=gemini-2.0-flash
 OLLAMA_URL=http://ollama:11434
 OLLAMA_MODEL_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
 OLLAMA_MODEL_CHAT_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
@@ -129,6 +134,7 @@ VITE_REQUIRE_SERVER_TTS=true
 NODE_ENV=production
 EOF
     success ".env file created"
+    warning "⚠ Update GEMINI_API_KEY in .env before starting!"
 else
     success ".env file exists"
 fi
@@ -170,35 +176,51 @@ $help_text"
 
 section "STEP 2: Validating Local AI Model Files"
 
-OLLAMA_MODEL_PATH=$(get_env_value "OLLAMA_MODEL_PATH")
-OLLAMA_MODEL_CHAT_PATH=$(get_env_value "OLLAMA_MODEL_CHAT_PATH")
-OLLAMA_MODEL_ANALYSIS_PATH=$(get_env_value "OLLAMA_MODEL_ANALYSIS_PATH")
-OLLAMA_MODEL_DECISION_PATH=$(get_env_value "OLLAMA_MODEL_DECISION_PATH")
-
-if [ -z "$OLLAMA_MODEL_PATH" ]; then
-    OLLAMA_MODEL_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
-fi
-if [ -z "$OLLAMA_MODEL_CHAT_PATH" ]; then
-    OLLAMA_MODEL_CHAT_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
-fi
-if [ -z "$OLLAMA_MODEL_ANALYSIS_PATH" ]; then
-    OLLAMA_MODEL_ANALYSIS_PATH="/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf"
-fi
-if [ -z "$OLLAMA_MODEL_DECISION_PATH" ]; then
-    OLLAMA_MODEL_DECISION_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
+# Detect LLM provider
+LLM_PROVIDER=$(get_env_value "LLM_PROVIDER")
+if [ -z "$LLM_PROVIDER" ]; then
+    LLM_PROVIDER="gemini"
 fi
 
-HOST_OLLAMA_MODEL_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_PATH" "/models/ollama/" "./models/ollama/")
-HOST_OLLAMA_MODEL_CHAT_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_CHAT_PATH" "/models/ollama/" "./models/ollama/")
-HOST_OLLAMA_MODEL_ANALYSIS_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_ANALYSIS_PATH" "/models/ollama/" "./models/ollama/")
-HOST_OLLAMA_MODEL_DECISION_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_DECISION_PATH" "/models/ollama/" "./models/ollama/")
+if [ "$LLM_PROVIDER" = "ollama" ]; then
+    OLLAMA_MODEL_PATH=$(get_env_value "OLLAMA_MODEL_PATH")
+    OLLAMA_MODEL_CHAT_PATH=$(get_env_value "OLLAMA_MODEL_CHAT_PATH")
+    OLLAMA_MODEL_ANALYSIS_PATH=$(get_env_value "OLLAMA_MODEL_ANALYSIS_PATH")
+    OLLAMA_MODEL_DECISION_PATH=$(get_env_value "OLLAMA_MODEL_DECISION_PATH")
 
-info "Checking local Ollama GGUF model files..."
-assert_local_file "Ollama base model" "$HOST_OLLAMA_MODEL_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
-assert_local_file "Ollama chat model" "$HOST_OLLAMA_MODEL_CHAT_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
-assert_local_file "Ollama analysis model" "$HOST_OLLAMA_MODEL_ANALYSIS_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
-assert_local_file "Ollama decision model" "$HOST_OLLAMA_MODEL_DECISION_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
-success "Local Ollama model files are ready"
+    if [ -z "$OLLAMA_MODEL_PATH" ]; then
+        OLLAMA_MODEL_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
+    fi
+    if [ -z "$OLLAMA_MODEL_CHAT_PATH" ]; then
+        OLLAMA_MODEL_CHAT_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
+    fi
+    if [ -z "$OLLAMA_MODEL_ANALYSIS_PATH" ]; then
+        OLLAMA_MODEL_ANALYSIS_PATH="/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf"
+    fi
+    if [ -z "$OLLAMA_MODEL_DECISION_PATH" ]; then
+        OLLAMA_MODEL_DECISION_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
+    fi
+
+    HOST_OLLAMA_MODEL_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_PATH" "/models/ollama/" "./models/ollama/")
+    HOST_OLLAMA_MODEL_CHAT_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_CHAT_PATH" "/models/ollama/" "./models/ollama/")
+    HOST_OLLAMA_MODEL_ANALYSIS_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_ANALYSIS_PATH" "/models/ollama/" "./models/ollama/")
+    HOST_OLLAMA_MODEL_DECISION_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_DECISION_PATH" "/models/ollama/" "./models/ollama/")
+
+    info "Checking local Ollama GGUF model files..."
+    assert_local_file "Ollama base model" "$HOST_OLLAMA_MODEL_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
+    assert_local_file "Ollama chat model" "$HOST_OLLAMA_MODEL_CHAT_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
+    assert_local_file "Ollama analysis model" "$HOST_OLLAMA_MODEL_ANALYSIS_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
+    assert_local_file "Ollama decision model" "$HOST_OLLAMA_MODEL_DECISION_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
+    success "Local Ollama model files are ready"
+else
+    info "Using Gemini API as LLM provider (skipping Ollama model validation)"
+    GEMINI_API_KEY=$(get_env_value "GEMINI_API_KEY")
+    if [ -z "$GEMINI_API_KEY" ] || [ "$GEMINI_API_KEY" = "YOUR_GEMINI_API_KEY_HERE" ]; then
+        warning "⚠ GEMINI_API_KEY is not set in .env! Update it before making calls."
+    else
+        success "Gemini API key is configured"
+    fi
+fi
 
 WHISPER_MODEL_PATH=$(get_env_value "WHISPER_MODEL_PATH")
 if [ -z "$WHISPER_MODEL_PATH" ]; then
@@ -298,7 +320,12 @@ info "Starting containers..."
 info "This will take 2-3 minutes for initialization"
 echo ""
 
-docker compose up -d
+# Start services (use --profile ollama if using Ollama provider)
+if [ "$LLM_PROVIDER" = "ollama" ]; then
+    docker compose --profile ollama up -d
+else
+    docker compose up -d
+fi
 
 if [ $? -ne 0 ]; then
     error "Failed to start services. Check logs with: docker compose logs"
@@ -344,12 +371,16 @@ else
     error "Redis failed to start. Check logs: docker logs healthcare_redis"
 fi
 
-# Ollama
-info "Waiting for Ollama..."
-if wait_for_service "healthcare_ollama"; then
-    success "Ollama is ready"
+# Ollama (only in ollama mode)
+if [ "$LLM_PROVIDER" = "ollama" ]; then
+    info "Waiting for Ollama..."
+    if wait_for_service "healthcare_ollama"; then
+        success "Ollama is ready"
+    else
+        error "Ollama failed to start. Check logs: docker logs healthcare_ollama"
+    fi
 else
-    error "Ollama failed to start. Check logs: docker logs healthcare_ollama"
+    info "Using Gemini API — Ollama container not required"
 fi
 
 # Whisper

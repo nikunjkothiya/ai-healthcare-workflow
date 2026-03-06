@@ -17,9 +17,10 @@
       <div v-for="campaign in campaigns" :key="campaign.id" class="campaign-card">
         <div class="campaign-header">
           <h3>{{ campaign.name }}</h3>
-          <span :class="'status-badge ' + campaign.status">
-            {{ campaign.status }}
-          </span>
+          <div class="campaign-badges">
+            <span v-if="campaign.campaign_type" class="type-badge">{{ formatCampaignType(campaign.campaign_type) }}</span>
+            <span :class="'status-badge ' + campaign.status">{{ campaign.status }}</span>
+          </div>
         </div>
         <div class="campaign-meta">
           <p>Created: {{ formatDate(campaign.created_at) }}</p>
@@ -43,6 +44,15 @@
           <div class="form-group">
             <label>Campaign Name</label>
             <input v-model="newCampaignName" type="text" required placeholder="e.g., Diabetes Appointment Reminders" />
+          </div>
+          <div class="form-group">
+            <label>Campaign Type *</label>
+            <select v-model="newCampaignType" class="form-select" required>
+              <option v-for="ct in campaignTypes" :key="ct.value" :value="ct.value">
+                {{ ct.icon }} {{ ct.label }}
+              </option>
+            </select>
+            <small class="help-text">This determines how the AI agent will approach the conversation.</small>
           </div>
           <div class="form-group">
             <label>Opening Prompt (First thing AI says when patient answers)</label>
@@ -106,6 +116,7 @@
         <h2>{{ selectedCampaign.campaign.name }}</h2>
         <div class="campaign-details">
           <p><strong>Status:</strong> <span :class="'status-badge ' + selectedCampaign.campaign.status">{{ selectedCampaign.campaign.status }}</span></p>
+          <p v-if="selectedCampaign.campaign.campaign_type"><strong>Type:</strong> <span class="type-badge">{{ formatCampaignType(selectedCampaign.campaign.campaign_type) }}</span></p>
           <p><strong>Total Patients:</strong> {{ selectedCampaign.patients.length }}</p>
           
           <div v-if="selectedCampaign.campaign.status === 'running'" class="live-calls-section">
@@ -174,8 +185,17 @@ export default {
       loading: true,
       showCreateModal: false,
       newCampaignName: '',
+      newCampaignType: 'appointment_confirmation',
       newCampaignOpening: '',
       newCampaignCategories: [],
+      campaignTypes: [
+        { value: 'appointment_confirmation', label: 'Appointment Confirmation', icon: '📅' },
+        { value: 'medicine_reminder', label: 'Medicine Reminder', icon: '💊' },
+        { value: 'health_report', label: 'Health Report', icon: '📋' },
+        { value: 'feedback_collection', label: 'Feedback Collection', icon: '💬' },
+        { value: 'post_discharge_followup', label: 'Post-Discharge Followup', icon: '🏥' },
+        { value: 'general_outreach', label: 'General Outreach', icon: '📞' }
+      ],
       creatingCampaign: false,
       startTimeOption: 'now',
       scheduleDateTime: '',
@@ -259,6 +279,7 @@ export default {
 
         const createResponse = await api.post('/campaigns', {
           name: this.newCampaignName,
+          campaign_type: this.newCampaignType,
           opening_prompt: this.newCampaignOpening,
           schedule_time: scheduleTime,
           retry_limit: 0  // No retries - just mark as missed/rejected
@@ -346,6 +367,7 @@ export default {
     closeCreateModal() {
       this.showCreateModal = false;
       this.newCampaignName = '';
+      this.newCampaignType = 'appointment_confirmation';
       this.newCampaignOpening = '';
       this.newCampaignCategories = [];
       this.startTimeOption = 'now';
@@ -418,6 +440,18 @@ export default {
     
     formatDate(dateString) {
       return new Date(dateString).toLocaleString();
+    },
+
+    formatCampaignType(type) {
+      const map = {
+        appointment_confirmation: '📅 Appointment Confirmation',
+        medicine_reminder: '💊 Medicine Reminder',
+        health_report: '📋 Health Report',
+        feedback_collection: '💬 Feedback Collection',
+        post_discharge_followup: '🏥 Post-Discharge Followup',
+        general_outreach: '📞 General Outreach'
+      };
+      return map[type] || type;
     }
   }
 };
@@ -837,5 +871,37 @@ button:disabled {
   color: #0369a1;
   font-size: 1.1rem;
   margin-bottom: 1rem;
+}
+
+.form-select {
+  width: 100%;
+  padding: 0.75rem;
+  border: 2px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 1rem;
+  background: white;
+  cursor: pointer;
+  appearance: auto;
+}
+
+.form-select:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.type-badge {
+  padding: 0.2rem 0.6rem;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.campaign-badges {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
 }
 </style>

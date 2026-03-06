@@ -32,10 +32,10 @@ chmod +x start.sh verify.sh
 
 The `start.sh` script will automatically:
 1. Check prerequisites (Docker, Docker Compose)
-2. Validate local model files in `models/` (Whisper, Ollama, TTS)
-3. Register Ollama model tags from local GGUF files
+2. Detect LLM provider (Gemini or Ollama from `.env`)
+3. Validate local model files (Whisper, TTS; Ollama models only if `LLM_PROVIDER=ollama`)
 4. Build all Docker images
-5. Start all services
+5. Start all services (Ollama container only starts in Ollama mode)
 6. Initialize database with seed data
 7. Wait for all services to be healthy
 
@@ -104,32 +104,13 @@ VERIFY_CALL_MODE=websocket ./verify.sh
 - No need to upload CSV for every campaign
 
 ### Intelligent Campaign System
+- **6 Campaign Types**: appointment confirmation, medicine reminder, health report, feedback collection, post-discharge followup, general outreach
 - Hospital-specific opening prompts
+- Campaign-type-aware AI prompts (different conversation goals per type)
 - Category-based patient selection
 - Automated call scheduling (Start Now or Schedule Later)
 - Real-time progress monitoring
 - Patient call URLs generated automatically when campaign starts
-
-### Real Voice Conversations (No Simulation)
-- **AI agent calls patient via URL** (replaces Twilio for MVP demo)
-- Patient opens URL on another device (simulates patient's phone)
-- **Real-time voice conversation**: AI speaks -> Patient speaks -> AI responds
-- Natural, context-aware conversations
-- Full STT -> LLM -> TTS pipeline
-- Live campaign flow does not use static responses or synthetic transcripts
-- `simulation` mode is kept only for automated verification and API testing (`verify.sh`)
-- Transcript captured in real-time
-- Automatic post-call analysis
-
-### AI-Powered Conversations
-- Personalized greetings based on patient data
-- Context-aware responses using campaign objective + sliding memory
-- Strict realtime JSON output per turn (`reply`, `action`, `goal_status`, `risk_detected`, `confidence`)
-- Turn actions: `continue`, `end_call`, `transfer_human`
-- Turn gating: patient audio is ignored while assistant audio is playing/processing
-- Transcript sanitization removes `[BLANK_AUDIO]`/silence markers before storage and analysis
-- Emergency safety override for severe symptom keywords
-- Intelligent follow-up routing with manual escalation flags
 
 ### Production-Grade AI Prompts
 **The AI models are the heart of this system. We use comprehensive prompt engineering to ensure perfect outputs:**
@@ -324,7 +305,7 @@ Backend API (Express)
   v
 Worker (BullMQ)
   +-> Whisper (STT)
-  +-> Ollama (LLM)
+  +-> Gemini API (Primary LLM) or Ollama (Fallback LLM)
   +-> Coqui (TTS)
 ```
 
@@ -373,6 +354,7 @@ scheduled -> queued -> in_progress -> awaiting_response -> completed
 
 3. Create & Schedule Campaign (single modal)
    - Enter campaign name
+   - Select campaign type (appointment, medicine, report, feedback, followup, outreach)
    - Set opening prompt
    - Select patient categories in the same modal
    - Choose Start Now (1 minute delay) or Schedule for Later
@@ -412,15 +394,14 @@ scheduled -> queued -> in_progress -> awaiting_response -> completed
     Whisper base.en transcribes in 1.8s chunks with partial updates
 
 6. AI analyzes response
-    Qwen2.5 3B (Q4_K_M) returns strict JSON turn output
+    Gemini 2.0 Flash (or Ollama fallback) returns strict JSON turn output
     Emergency words auto-trigger transfer_human guidance override
     Sliding memory uses campaign objective + patient context + last 6 turns
     Continues conversation
 
 7. Call ends
     Transcript saved to database
-    3B realtime model is released
-    Qwen2.5 7B (Q4_K_M) runs deterministic post-call analysis
+    Post-call analysis extracts structured data (summary, action items, urgency)
     JSON schema validated with one retry on invalid output
     Patient sees call status update
 
@@ -457,6 +438,7 @@ patients (
 -- 4. Campaigns
 campaigns (
   id, organization_id, user_id, name, status,
+  campaign_type,  -- appointment_confirmation, medicine_reminder, health_report, etc.
   script_template, schedule_time, retry_limit,
   created_at, updated_at
 )
@@ -467,7 +449,9 @@ calls (
   transcript TEXT, structured_output JSONB,
   sentiment, appointment_confirmed, requested_callback,
   summary, duration, state, state_metadata JSONB,
-  retry_count, created_at, updated_at
+  retry_count, campaign_goal_achieved, urgency,
+  action_items JSONB,
+  created_at, updated_at
 )
 
 -- 6. Events (audit trail)
@@ -478,8 +462,8 @@ events (
 
 -- 7. Agent Configs
 agent_configs (
-  id, organization_id, campaign_id, max_turns,
-  greeting_script, prompt_template,
+  id, organization_id, campaign_id, campaign_type,
+  max_turns, greeting_script, prompt_template,
   end_keywords[], followup_keywords[], confirmation_keywords[],
   created_at, updated_at
 )
@@ -501,10 +485,10 @@ dead_letter_queue (
 |---------|-------|------|---------|
 | **postgres** | postgres:15-alpine | 5434 | Database |
 | **redis** | redis:7-alpine | 6381 | Queue + PubSub |
-| **ollama** | ollama/ollama | 11434 | LLM service (local GGUF import) |
+| **ollama** | ollama/ollama | 11434 | LLM fallback (optional — `--profile ollama`) |
 | **whisper** | Custom | 9000 (internal) | Speech-to-text (whisper-server) |
 | **tts** | synesthesiam/coqui-tts | 5002 | Server-side text-to-speech |
-| **backend** | Custom Node.js | 4000 | API + WebSocket |
+| **backend** | Custom Node.js | 4000 | API + WebSocket + Gemini LLM |
 | **worker** | Custom Node.js | - | Job processor |
 | **frontend** | Custom Vue 3 | 3000 | Dashboard |
 
@@ -531,7 +515,16 @@ REDIS_PORT=6379
 # JWT
 JWT_SECRET=supersecret_change_in_production
 
-# AI Services
+# LLM Provider ('gemini' or 'ollama')
+LLM_PROVIDER=gemini
+
+# Gemini API (Primary LLM)
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
+GEMINI_MODEL_CHAT=gemini-2.0-flash
+GEMINI_MODEL_ANALYSIS=gemini-2.0-flash
+GEMINI_MODEL_DECISION=gemini-2.0-flash
+
+# Ollama (Fallback LLM — only used when LLM_PROVIDER=ollama)
 OLLAMA_URL=http://ollama:11434
 OLLAMA_MODEL_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
 OLLAMA_MODEL_CHAT_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
@@ -543,11 +536,15 @@ LLM_NUM_CTX_REALTIME=1536
 LLM_MAX_TOKENS_ANALYSIS=768
 LLM_NUM_CTX_ANALYSIS=8192
 LLM_TIMEOUT_MS=45000
+
+# STT (Whisper)
 WHISPER_HOST=whisper
 WHISPER_PORT=9000
 WHISPER_MODEL_PATH=/models/whisper/ggml-small.en.bin
 STT_CHUNK_MS=2500
 STT_SILENCE_MS=800
+
+# TTS (Coqui)
 TTS_HOST=tts
 TTS_PORT=5002
 TTS_MODEL_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar
@@ -585,12 +582,19 @@ Only `README.md` files are committed under `models/`; model assets must be provi
 - Frontend `MobileCall` uses a client-side VAD + utterance buffer so only speech segments (not raw streaming audio) are encoded to WAV and sent as `audio_chunk`s to the backend, which reduces STT load and latency
 - **No model downloads during build** — model is mounted to `/models/whisper/` inside container.
 
-**Ollama (LLM in Docker):**
-- Runs as `healthcare_ollama` container on port `11434`.
-- Registers/refreshes local GGUF files from `models/ollama/` at startup.
-- Env variables used: `OLLAMA_MODEL_PATH`, `OLLAMA_MODEL_CHAT_PATH`, `OLLAMA_MODEL_ANALYSIS_PATH`, `OLLAMA_MODEL_DECISION_PATH`.
-- Internal Ollama tags: `healthcare-base`, `healthcare-chat`, `healthcare-analysis`, `healthcare-decision`.
-- Runtime manager still handles realtime/analysis model stage swaps.
+**Gemini API (Primary LLM):**
+- Default provider — set `LLM_PROVIDER=gemini` in `.env`
+- Uses `gemini-2.0-flash` for chat, analysis, and decision tasks
+- Requires `GEMINI_API_KEY` to be set with a valid Google AI API key
+- No local model files needed — all inference runs via the Gemini API
+- Supports 6 campaign-type-specific prompt templates
+
+**Ollama (Fallback LLM — optional):**
+- Set `LLM_PROVIDER=ollama` to use local models instead of Gemini
+- Runs as `healthcare_ollama` container on port `11434` (only starts with `--profile ollama`)
+- Registers/refreshes local GGUF files from `models/ollama/` at startup
+- Env variables used: `OLLAMA_MODEL_PATH`, `OLLAMA_MODEL_CHAT_PATH`, `OLLAMA_MODEL_ANALYSIS_PATH`, `OLLAMA_MODEL_DECISION_PATH`
+- Internal Ollama tags: `healthcare-base`, `healthcare-chat`, `healthcare-analysis`, `healthcare-decision`
 
 **Coqui TTS (Required in Production Mode):**
 - Default Model: `tacotron2-DDC` (+ HiFiGAN vocoder) (~112MB)
@@ -624,13 +628,15 @@ GET    /patients/by-category/:cat - Get patients by category
 ### Campaigns
 ```
 GET  /campaigns              - List campaigns
-POST /campaigns              - Create campaign (with opening_prompt)
-GET  /campaigns/:id          - Get campaign details
+POST /campaigns              - Create campaign (with campaign_type, opening_prompt)
+GET  /campaigns/:id          - Get campaign details (includes campaign_type)
 DELETE /campaigns/:id        - Delete campaign and related campaign data
 POST /campaigns/:id/assign-patients - Assign patients by category 
 POST /campaigns/:id/patients - Upload patients CSV (optional/legacy)
 POST /campaigns/:id/start    - Start campaign (body: { callMode: "websocket" } for live calls, "simulation" for automation; returns callLinks)
 ```
+
+**Campaign Types:** `appointment_confirmation`, `medicine_reminder`, `health_report`, `feedback_collection`, `post_discharge_followup`, `general_outreach`
 
 ### Calls
 ```
@@ -765,11 +771,13 @@ TOKEN=$(curl -s -X POST http://localhost:4000/auth/login \
   -d '{"email":"staff@cityhospital.com","password":"secure123"}' | jq -r '.token')
 
 # Create campaign
+# Create campaign with campaign type
 curl -X POST http://localhost:4000/campaigns \
   -H "Authorization: Bearer $TOKEN" \
   -d '{
     "name":"March Appointment Reminders",
-    "script_template":"Hello {name}, calling to confirm your appointment with {doctor} on {appointment_date}",
+    "campaign_type":"appointment_confirmation",
+    "opening_prompt":"Hello {name}, calling to confirm your appointment with {doctor} on {appointment_date}",
     "schedule_time":"2026-03-01T09:00:00Z",
     "retry_limit":0
   }'
@@ -799,7 +807,7 @@ WebSocket campaign flow:
 2. Patient accepts from dynamic link (/mobile-call?patient=<id>&campaign=<id>)
 3. If not accepted in 30s, call is marked missed/rejected (no automatic retry in default UI flow)
 4. If accepted, live conversation runs with silence-gated turn handling (STT/LLM/TTS)
-5. Call ends -> 3B unloaded -> 7B deterministic post-call analysis + schema validation
+5. Call ends -> post-call analysis extracts structured output + schema validation
 6. Worker proceeds to next patient (strict one-by-one)
 ```
 
@@ -841,11 +849,13 @@ curl http://localhost:4000/admin/calls/1/events \
 - Enables async workflows
 
 ### Realtime Decision Engine
-- Uses Qwen2.5 3B Instruct (Q4_K_M) for live turn JSON
+- Uses Gemini 2.0 Flash (primary) or Qwen2.5 via Ollama (fallback) for live turn JSON
+- 6 campaign-type-specific prompt templates for targeted conversations
 - Maintains sliding memory (system prompt + campaign objective + patient context + summary + last 6 turns)
+- Fact tracking (confirmed appointments, barriers, concerns) and emotional state detection
 - Waits for silence threshold before sending patient utterance
 - Enforces max duration (10 min) and max turns (30)
-- Applies mandatory emergency keyword override
+- Applies mandatory emergency keyword override (40+ patterns, 8 categories)
 
 ### Post-Call Structured Extraction
 ```json
@@ -860,11 +870,15 @@ curl http://localhost:4000/admin/calls/1/events \
   "risk_flags": ["string"],
   "requires_manual_followup": boolean,
   "followup_reason": "string|null",
-  "priority": "low|medium|high"
+  "priority": "low|medium|high",
+  "urgency": "routine|urgent|critical",
+  "action_items": ["string"],
+  "patient_concerns": ["string"],
+  "barrier_type": "none|transportation|financial|scheduling|language|other"
 }
 ```
 
-**Note:** Post-call analysis runs after call end on the 7B model with strict JSON validation. If schema validation still fails after one retry, call is marked `failed`.
+**Note:** Post-call analysis runs after call end with strict JSON validation. If schema validation still fails after one retry, call is marked `failed`.
 
 ### Retry & Failure Handling
 - No automatic patient retry in default UI flow (`retry_limit: 0`)

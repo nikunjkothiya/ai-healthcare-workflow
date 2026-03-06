@@ -698,11 +698,13 @@ async function flushPendingUserTranscript(sessionId, force = false) {
     const emergency = detectEmergencyRisk(transcript);
     if (emergency.detected) {
       realtimeTurn = {
-        reply: EMERGENCY_GUIDANCE,
+        reply: emergency.guidance || EMERGENCY_GUIDANCE,
         action: 'transfer_human',
         goal_status: 'failed',
         risk_detected: true,
-        confidence: 1
+        confidence: 1,
+        emergency_category: emergency.category,
+        emergency_severity: emergency.severity
       };
     } else {
       await ensureRealtimeLeaseReady(session);
@@ -712,6 +714,7 @@ async function flushPendingUserTranscript(sessionId, force = false) {
       const llmStartedAt = Date.now();
       realtimeTurn = await llmService.generateRealtimeTurn({
         campaignObjective: buildCampaignObjective(session),
+        campaignType: session.patientContext?.campaign_type || 'appointment_confirmation',
         patient: session.patientContext || null,
         conversationSummary: memory.summary,
         recentTurns: memory.lastTurns,
@@ -1091,6 +1094,7 @@ async function loadPatientContext(patientId) {
          p.campaign_id,
          c.retry_limit,
          c.name AS campaign_name,
+         c.campaign_type AS campaign_type,
          c.script_template AS campaign_script_template
        FROM patients p
        LEFT JOIN campaigns c ON c.id = p.campaign_id

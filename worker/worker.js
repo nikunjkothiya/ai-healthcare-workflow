@@ -421,7 +421,7 @@ async function processPatientCall(patientId, jobData = {}) {
     // SIMULATION MODE: For batch/API testing without real WebSocket calls
     // This mode processes calls with sample audio or generates minimal transcript for testing
     // Real WebSocket calls happen through websocket.js, not here
-    
+
     let conversation = [];
     const systemPrompt = `You are a friendly healthcare assistant calling ${patient.name} to confirm their appointment. Keep responses brief and natural. Respond in 1-2 short sentences.`;
     let agentRequestedFollowup = false;
@@ -473,13 +473,14 @@ async function processPatientCall(patientId, jobData = {}) {
         const emergency = detectEmergencyRisk(transcript);
         if (emergency.detected) {
           agentRequestedFollowup = true;
+          const emergencyMessage = emergency.guidance || EMERGENCY_GUIDANCE;
           conversation.push({
             role: 'assistant',
-            text: EMERGENCY_GUIDANCE
+            text: emergencyMessage
           });
           await eventBus.emit(EVENTS.CALL_RESPONSE_GENERATED, {
             callId,
-            response: EMERGENCY_GUIDANCE,
+            response: emergencyMessage,
             action: ACTIONS.TRANSFER_HUMAN
           });
           await eventBus.emit(EVENTS.CALL_ESCALATED, {
@@ -488,6 +489,8 @@ async function processPatientCall(patientId, jobData = {}) {
             organizationId,
             campaignId: patient.campaign_id,
             reason: 'emergency_keywords_detected',
+            category: emergency.category,
+            severity: emergency.severity,
             riskMatches: emergency.matches
           });
           break;
@@ -562,25 +565,26 @@ async function processPatientCall(patientId, jobData = {}) {
       // NO SAMPLE AUDIO: Create minimal transcript for simulation mode testing
       // This is ONLY for API/batch testing - real calls use WebSocket with live audio
       console.log('Simulation mode: Creating minimal test transcript');
-      
+
       const testPatientResponse = "Yes, I can confirm my appointment";
       conversation.push({
         role: 'patient',
         text: testPatientResponse
       });
-      
+
       turnCount++;
 
       const emergency = detectEmergencyRisk(testPatientResponse);
       if (emergency.detected) {
         agentRequestedFollowup = true;
+        const emergencyMessage = emergency.guidance || EMERGENCY_GUIDANCE;
         conversation.push({
           role: 'assistant',
-          text: EMERGENCY_GUIDANCE
+          text: emergencyMessage
         });
         await eventBus.emit(EVENTS.CALL_RESPONSE_GENERATED, {
           callId,
-          response: EMERGENCY_GUIDANCE,
+          response: emergencyMessage,
           action: ACTIONS.TRANSFER_HUMAN
         });
         await eventBus.emit(EVENTS.CALL_ESCALATED, {
@@ -589,6 +593,8 @@ async function processPatientCall(patientId, jobData = {}) {
           organizationId,
           campaignId: patient.campaign_id,
           reason: 'emergency_keywords_detected',
+          category: emergency.category,
+          severity: emergency.severity,
           riskMatches: emergency.matches
         });
       } else {
@@ -630,7 +636,7 @@ async function processPatientCall(patientId, jobData = {}) {
             role: 'assistant',
             text: aiResponse
           });
-          
+
           await eventBus.emit(EVENTS.CALL_RESPONSE_GENERATED, { callId, response: aiResponse, action: decision.action });
         }
       }
@@ -662,7 +668,7 @@ async function processPatientCall(patientId, jobData = {}) {
       await eventBus.emit(EVENTS.CALL_ANALYSIS_COMPLETED, { callId, structured });
     } catch (extractError) {
       console.error('CRITICAL: AI analysis failed for call', callId, ':', extractError.message);
-      
+
       // Mark call as failed due to AI analysis failure
       await query(`
         UPDATE calls SET 
@@ -677,17 +683,17 @@ async function processPatientCall(patientId, jobData = {}) {
         turnCount * 10,
         callId
       ]);
-      
-      await transitionToFinalState(callId, STATES.FAILED, { 
+
+      await transitionToFinalState(callId, STATES.FAILED, {
         error: 'ai_analysis_failed',
-        message: extractError.message 
+        message: extractError.message
       });
-      
+
       await query(
         'UPDATE patients SET status = $1 WHERE id = $2',
         ['failed', patientId]
       );
-      
+
       await eventBus.emit(EVENTS.CALL_FAILED, {
         callId,
         patientId,
@@ -696,7 +702,7 @@ async function processPatientCall(patientId, jobData = {}) {
         reason: 'ai_analysis_failed',
         error: extractError.message
       });
-      
+
       throw new Error(`Call ${callId} failed: AI analysis unavailable - ${extractError.message}`);
     } finally {
       llmService.releaseAnalysisModel().catch((releaseError) => {
@@ -841,16 +847,26 @@ async function startWorker() {
     console.error('EventBus init failed:', err.message);
   }
 
-  // Wait for Ollama and required stage models to be ready.
+  // Wait for LLM to be ready.
+  // If using Gemini, skip Ollama wait since it's API-based.
+  const llmProvider = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
   while (true) {
-    const ollamaReady = await waitForOllama();
-    const llmReady = ollamaReady ? await llmService.checkAvailability() : false;
+    let llmReady = false;
 
-    if (ollamaReady && llmReady) {
+    if (llmProvider === 'gemini') {
+      // Gemini doesn't need Ollama — just check API availability
+      llmReady = await llmService.checkAvailability();
+    } else {
+      // Ollama mode: wait for Ollama server first, then check models
+      const ollamaReady = await waitForOllama();
+      llmReady = ollamaReady ? await llmService.checkAvailability() : false;
+    }
+
+    if (llmReady) {
       break;
     }
 
-    console.warn('Worker: LLM prerequisites are not ready. Retrying startup checks in 30 seconds...');
+    console.warn(`Worker: LLM prerequisites are not ready (provider=${llmProvider}). Retrying in 30 seconds...`);
     await sleep(30000);
   }
 
