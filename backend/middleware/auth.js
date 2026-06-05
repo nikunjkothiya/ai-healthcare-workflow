@@ -22,8 +22,8 @@ function requireHospitalAdmin(req, res, next) {
   if (!req.user) {
     return res.status(401).json({ error: 'Authentication required' });
   }
-  if (req.user.role !== 'hospital_admin') {
-    return res.status(403).json({ error: 'Access denied. Hospital admin only.' });
+  if (req.user.role !== 'hospital_admin' && req.user.role !== 'product_admin') {
+    return res.status(403).json({ error: 'Access denied. Admin access required.' });
   }
   next();
 }

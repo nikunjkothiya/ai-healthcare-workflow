@@ -84,7 +84,7 @@ services:
     networks:
       - healthcare_network
     command: >
-      /whisper.cpp/build/bin/whisper-server --host 0.0.0.0 --port 9000 --inference-path /inference -m ${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en.bin} --language en --no-timestamps
+      /whisper.cpp/build/bin/whisper-server --host 0.0.0.0 --port 9000 --inference-path /inference -m ${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en.bin} --language en --no-timestamps -t 4 --print-progress false
 
   tts:
     image: synesthesiam/coqui-tts:latest
@@ -121,6 +121,53 @@ services:
     networks:
       - healthcare_network
 
+  # ── Kokoro-82M TTS (Recommended — #1 TTS Arena, Apache 2.0) ──────────
+  # Replaces Tacotron2 for low-resource deployment.
+  # 82M params, runs on CPU, 50+ voices, natural prosody.
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi:latest
+    container_name: healthcare_kokoro
+    ports:
+      - "${KOKORO_PORT:-8880}:8880"
+    environment:
+      - KOKORO_VOICE=${KOKORO_VOICE:-af_bella}
+      - KOKORO_LANG=${KOKORO_LANG:-en-us}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - healthcare_network
+
+  # ── Moonshine STT (Optional — 5x faster than Whisper for edge) ──────
+  # 106M params, optimized for real-time streaming ASR.
+  # Enable with STT_PROVIDER=moonshine
+  moonshine:
+    image: ghcr.io/usefulsensors/moonshine-server:latest
+    container_name: healthcare_moonshine
+    ports:
+      - "${MOONSHINE_PORT:-9001}:9001"
+    environment:
+      - MOONSHINE_MODEL=${MOONSHINE_MODEL:-moonshine/base}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - healthcare_network
+
   backend:
     build:
       context: ./backend
@@ -139,24 +186,27 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - JWT_SECRET=${JWT_SECRET:-supersecret_change_in_production}
-      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - LLM_CHAT_PROVIDER=${LLM_CHAT_PROVIDER:-}
+      - LLM_REALTIME_PROVIDER=${LLM_REALTIME_PROVIDER:-}
+      - LLM_DECISION_PROVIDER=${LLM_DECISION_PROVIDER:-}
+      - LLM_ANALYSIS_PROVIDER=${LLM_ANALYSIS_PROVIDER:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_MODEL_CHAT=${GEMINI_MODEL_CHAT:-gemini-2.0-flash}
-      - GEMINI_MODEL_ANALYSIS=${GEMINI_MODEL_ANALYSIS:-gemini-2.0-flash}
-      - GEMINI_MODEL_DECISION=${GEMINI_MODEL_DECISION:-gemini-2.0-flash}
+      - GEMINI_MODEL_CHAT=${GEMINI_MODEL_CHAT:-gemini-2.5-flash}
+      - GEMINI_MODEL_ANALYSIS=${GEMINI_MODEL_ANALYSIS:-gemini-2.5-flash}
+      - GEMINI_MODEL_DECISION=${GEMINI_MODEL_DECISION:-gemini-2.5-flash}
       - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
-      - OLLAMA_MODEL_PATH=${OLLAMA_MODEL_PATH}
-      - OLLAMA_MODEL_CHAT_PATH=${OLLAMA_MODEL_CHAT_PATH}
-      - OLLAMA_MODEL_ANALYSIS_PATH=${OLLAMA_MODEL_ANALYSIS_PATH}
-      - OLLAMA_MODEL_DECISION_PATH=${OLLAMA_MODEL_DECISION_PATH}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-200}
-      - LLM_NUM_CTX=${LLM_NUM_CTX:-1536}
-      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME:-1536}
+      - OLLAMA_MODEL_CHAT=${OLLAMA_MODEL_CHAT:-llama3.2:3b}
+      - OLLAMA_MODEL_DECISION=${OLLAMA_MODEL_DECISION:-llama3.2:3b}
+      - OLLAMA_MODEL_ANALYSIS=${OLLAMA_MODEL_ANALYSIS:-qwen3:8b}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-150}
+      - LLM_NUM_CTX=${LLM_NUM_CTX:-1024}
+      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME:-1024}
       - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS:-768}
       - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS:-4096}
-      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-45000}
-      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-60000}
-      - LLM_ANALYSIS_TIMEOUT_MS=${LLM_ANALYSIS_TIMEOUT_MS:-180000}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-30000}
+      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-30000}
+      - LLM_ANALYSIS_TIMEOUT_MS=${LLM_ANALYSIS_TIMEOUT_MS:-120000}
       - LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS=${LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS:-18000}
       - CALL_SPACING_MS=${CALL_SPACING_MS:-15000}
       - RING_TIMEOUT_MS=${RING_TIMEOUT_MS:-30000}
@@ -164,11 +214,25 @@ services:
       - WHISPER_HOST=${WHISPER_HOST:-whisper}
       - WHISPER_PORT=${WHISPER_PORT:-9000}
       - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en.bin}
+      - STT_PROVIDER=${STT_PROVIDER:-whisper}
+      - MOONSHINE_HOST=${MOONSHINE_HOST:-moonshine}
+      - MOONSHINE_PORT=${MOONSHINE_PORT:-9001}
+      - MOONSHINE_MODEL=${MOONSHINE_MODEL:-moonshine/base}
       - TTS_HOST=${TTS_HOST:-tts}
       - TTS_PORT=${TTS_PORT:-5002}
+      - TTS_PROVIDER=${TTS_PROVIDER:-kokoro}
+      - KOKORO_HOST=${KOKORO_HOST:-kokoro}
+      - KOKORO_PORT=${KOKORO_PORT:-8880}
+      - KOKORO_VOICE=${KOKORO_VOICE:-af_bella}
+      - KOKORO_LANG=${KOKORO_LANG:-en-us}
       - REQUIRE_SERVER_TTS=${REQUIRE_SERVER_TTS:-true}
-      - STT_CHUNK_MS=${STT_CHUNK_MS:-2500}
-      - STT_SILENCE_MS=${STT_SILENCE_MS:-800}
+      - STT_CHUNK_MS=${STT_CHUNK_MS:-1200}
+      - STT_CHUNK_OVERLAP_MS=${STT_CHUNK_OVERLAP_MS:-200}
+      - STT_REALTIME_CHUNK_MS=${STT_REALTIME_CHUNK_MS:-1000}
+      - STT_SILENCE_MS=${STT_SILENCE_MS:-500}
+      - STT_VAD_SILENCE_RMS=${STT_VAD_SILENCE_RMS:-0.005}
+      - STT_MAX_CONCURRENT=${STT_MAX_CONCURRENT:-3}
+      - ASSISTANT_SPEECH_GUARD_MS=${ASSISTANT_SPEECH_GUARD_MS:-800}
       - MAX_CALL_DURATION_MS=${MAX_CALL_DURATION_MS:-600000}
       - MAX_CONVERSATION_TURNS=${MAX_CONVERSATION_TURNS:-30}
       - MAX_RUNTIME_RAM_GB=${MAX_RUNTIME_RAM_GB:-14}
@@ -189,7 +253,7 @@ services:
   worker:
     build:
       context: .
-      dockerfile: ./worker/Dockerfile
+      dockerfile: worker/Dockerfile
     container_name: healthcare_worker
     environment:
       - NODE_ENV=${NODE_ENV:-production}
@@ -200,24 +264,27 @@ services:
       - DB_PORT=${DB_PORT:-5432}
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - LLM_CHAT_PROVIDER=${LLM_CHAT_PROVIDER:-}
+      - LLM_REALTIME_PROVIDER=${LLM_REALTIME_PROVIDER:-}
+      - LLM_DECISION_PROVIDER=${LLM_DECISION_PROVIDER:-}
+      - LLM_ANALYSIS_PROVIDER=${LLM_ANALYSIS_PROVIDER:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_MODEL_CHAT=${GEMINI_MODEL_CHAT:-gemini-2.0-flash}
-      - GEMINI_MODEL_ANALYSIS=${GEMINI_MODEL_ANALYSIS:-gemini-2.0-flash}
-      - GEMINI_MODEL_DECISION=${GEMINI_MODEL_DECISION:-gemini-2.0-flash}
+      - GEMINI_MODEL_CHAT=${GEMINI_MODEL_CHAT:-gemini-2.5-flash}
+      - GEMINI_MODEL_ANALYSIS=${GEMINI_MODEL_ANALYSIS:-gemini-2.5-flash}
+      - GEMINI_MODEL_DECISION=${GEMINI_MODEL_DECISION:-gemini-2.5-flash}
       - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
-      - OLLAMA_MODEL_PATH=${OLLAMA_MODEL_PATH}
-      - OLLAMA_MODEL_CHAT_PATH=${OLLAMA_MODEL_CHAT_PATH}
-      - OLLAMA_MODEL_ANALYSIS_PATH=${OLLAMA_MODEL_ANALYSIS_PATH}
-      - OLLAMA_MODEL_DECISION_PATH=${OLLAMA_MODEL_DECISION_PATH}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-200}
-      - LLM_NUM_CTX=${LLM_NUM_CTX:-1536}
-      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME:-1536}
+      - OLLAMA_MODEL_CHAT=${OLLAMA_MODEL_CHAT:-llama3.2:3b}
+      - OLLAMA_MODEL_DECISION=${OLLAMA_MODEL_DECISION:-llama3.2:3b}
+      - OLLAMA_MODEL_ANALYSIS=${OLLAMA_MODEL_ANALYSIS:-qwen3:8b}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-150}
+      - LLM_NUM_CTX=${LLM_NUM_CTX:-1024}
+      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME:-1024}
       - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS:-768}
       - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS:-4096}
-      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-45000}
-      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-60000}
-      - LLM_ANALYSIS_TIMEOUT_MS=${LLM_ANALYSIS_TIMEOUT_MS:-180000}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-30000}
+      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-30000}
+      - LLM_ANALYSIS_TIMEOUT_MS=${LLM_ANALYSIS_TIMEOUT_MS:-120000}
       - LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS=${LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS:-18000}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-1}
       - CALL_SPACING_MS=${CALL_SPACING_MS:-15000}
@@ -226,11 +293,23 @@ services:
       - WHISPER_HOST=${WHISPER_HOST:-whisper}
       - WHISPER_PORT=${WHISPER_PORT:-9000}
       - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en.bin}
+      - STT_PROVIDER=${STT_PROVIDER:-whisper}
+      - MOONSHINE_HOST=${MOONSHINE_HOST:-moonshine}
+      - MOONSHINE_PORT=${MOONSHINE_PORT:-9001}
+      - MOONSHINE_MODEL=${MOONSHINE_MODEL:-moonshine/base}
       - TTS_HOST=${TTS_HOST:-tts}
       - TTS_PORT=${TTS_PORT:-5002}
+      - TTS_PROVIDER=${TTS_PROVIDER:-kokoro}
+      - KOKORO_HOST=${KOKORO_HOST:-kokoro}
+      - KOKORO_PORT=${KOKORO_PORT:-8880}
+      - KOKORO_VOICE=${KOKORO_VOICE:-af_bella}
+      - KOKORO_LANG=${KOKORO_LANG:-en-us}
       - REQUIRE_SERVER_TTS=${REQUIRE_SERVER_TTS:-true}
-      - STT_CHUNK_MS=${STT_CHUNK_MS:-2500}
-      - STT_SILENCE_MS=${STT_SILENCE_MS:-800}
+      - STT_CHUNK_MS=${STT_CHUNK_MS:-1200}
+      - STT_CHUNK_OVERLAP_MS=${STT_CHUNK_OVERLAP_MS:-200}
+      - STT_SILENCE_MS=${STT_SILENCE_MS:-500}
+      - STT_VAD_SILENCE_RMS=${STT_VAD_SILENCE_RMS:-0.005}
+      - STT_MAX_CONCURRENT=${STT_MAX_CONCURRENT:-3}
       - MAX_RUNTIME_RAM_GB=${MAX_RUNTIME_RAM_GB:-14}
     depends_on:
       postgres:
@@ -257,6 +336,11 @@ services:
       - VITE_API_URL=http://localhost:4000
       - VITE_WS_URL=ws://localhost:4000
       - VITE_REQUIRE_SERVER_TTS=${VITE_REQUIRE_SERVER_TTS:-true}
+      - VITE_VAD_SPEECH_THRESHOLD=${VITE_VAD_SPEECH_THRESHOLD:-0.007}
+      - VITE_VAD_SILENCE_THRESHOLD=${VITE_VAD_SILENCE_THRESHOLD:-0.0035}
+      - VITE_VAD_MIN_SPEECH_MS=${VITE_VAD_MIN_SPEECH_MS:-450}
+      - VITE_VAD_END_SILENCE_MS=${VITE_VAD_END_SILENCE_MS:-1000}
+      - VITE_VAD_MAX_UTTERANCE_MS=${VITE_VAD_MAX_UTTERANCE_MS:-12000}
     depends_on:
       - backend
     deploy:

@@ -245,6 +245,11 @@ export default {
       const id = Number.parseInt(value, 10);
       return Number.isInteger(id) && id > 0 ? id : null;
     },
+    readEnvNumber(name, fallback) {
+      const raw = import.meta.env[name];
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    },
     closeSocket() {
       if (this.ws) {
         this.ws.close();
@@ -675,12 +680,11 @@ export default {
 
         const sampleRate = this.audioContext.sampleRate || 16000;
         const vadConfig = {
-          // Slightly lower thresholds so softer patient voices are picked up more reliably.
-          speechThreshold: 0.006,
-          silenceThreshold: 0.003,
-          minSpeechMs: 350,
-          endSilenceMs: 900,
-          maxUtteranceMs: 14000
+          speechThreshold: this.readEnvNumber('VITE_VAD_SPEECH_THRESHOLD', 0.007),
+          silenceThreshold: this.readEnvNumber('VITE_VAD_SILENCE_THRESHOLD', 0.0035),
+          minSpeechMs: this.readEnvNumber('VITE_VAD_MIN_SPEECH_MS', 450),
+          endSilenceMs: this.readEnvNumber('VITE_VAD_END_SILENCE_MS', 1000),
+          maxUtteranceMs: this.readEnvNumber('VITE_VAD_MAX_UTTERANCE_MS', 12000)
         };
 
         const state = {

@@ -17,11 +17,7 @@ async function addCallJob(patientId, extraData = {}, delayMs = 0) {
   };
   
   const job = await callQueue.add('process-call', jobData, {
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 2000
-    },
+    attempts: 1,
     delay: Math.max(0, parseInt(delayMs, 10) || 0)
   });
   

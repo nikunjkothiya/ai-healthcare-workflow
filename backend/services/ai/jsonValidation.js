@@ -4,6 +4,7 @@ function extractJsonObject(rawText) {
     throw new Error('Empty model response');
   }
 
+  // First try direct parse (handles already-clean JSON)
   const cleaned = text
     .replace(/```json\s*/gi, '')
     .replace(/```/g, '')
@@ -11,45 +12,60 @@ function extractJsonObject(rawText) {
 
   try {
     return JSON.parse(cleaned);
-  } catch (_) {
-    // continue with extraction fallback
+  } catch (_) { }
+
+  // Find the first { or [ and try to parse the substring until matching } or ]
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+
+  let startIdx = -1;
+  let targetClose = '';
+
+  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+    startIdx = firstBrace;
+    targetClose = '}';
+  } else if (firstBracket !== -1) {
+    startIdx = firstBracket;
+    targetClose = ']';
   }
 
-  for (let start = 0; start < cleaned.length; start++) {
-    if (cleaned[start] !== '{') continue;
-
+  if (startIdx !== -1) {
+    // We found a starting point. Let's find the closing counterpart.
     let depth = 0;
     let inString = false;
-    let escaped = false;
+    let isEscaped = false;
 
-    for (let end = start; end < cleaned.length; end++) {
-      const ch = cleaned[end];
+    for (let i = startIdx; i < cleaned.length; i++) {
+      const char = cleaned[i];
 
       if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (ch === '\\') {
-          escaped = true;
-        } else if (ch === '"') {
+        if (isEscaped) {
+          isEscaped = false;
+        } else if (char === '\\') {
+          isEscaped = true;
+        } else if (char === '"') {
           inString = false;
         }
         continue;
       }
 
-      if (ch === '"') {
+      if (char === '"') {
         inString = true;
         continue;
       }
 
-      if (ch === '{') depth += 1;
-      if (ch === '}') depth -= 1;
-
-      if (depth === 0) {
-        const candidate = cleaned.slice(start, end + 1);
-        try {
-          return JSON.parse(candidate);
-        } catch (_) {
-          // keep searching
+      if (char === (targetClose === '}' ? '{' : '[')) {
+        depth++;
+      } else if (char === targetClose) {
+        depth--;
+        if (depth === 0) {
+          const candidate = cleaned.substring(startIdx, i + 1);
+          try {
+            return JSON.parse(candidate);
+          } catch (_) {
+            // Unparsable, break and throw later
+            break;
+          }
         }
       }
     }

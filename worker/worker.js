@@ -10,6 +10,7 @@ require('dotenv').config();
 const { CallStateMachine, STATES } = require('./backend/orchestrator/callStateMachine');
 const { EventBus, EVENTS } = require('./backend/orchestrator/eventBus');
 const { AgentController, ACTIONS } = require('./backend/orchestrator/agentController');
+const { transitionToFinalState } = require('./backend/orchestrator/stateHelpers');
 
 // Import AI services
 const sttService = require('./backend/services/ai/sttService');
@@ -246,23 +247,6 @@ async function extractStructuredData(fullTranscript, patient = null, campaign = 
     console.error('This call will be marked as failed due to missing AI analysis');
     // Re-throw to mark call as failed - don't hide LLM failures
     throw new Error(`AI analysis failed: ${error.message}`);
-  }
-}
-
-async function transitionToFinalState(callId, finalState, metadata = {}) {
-  let transitioned = await stateMachine.transition(callId, finalState, metadata);
-  if (transitioned) return;
-
-  const currentState = await stateMachine.getCurrentState(callId);
-  if (finalState === STATES.REQUIRES_FOLLOWUP && currentState === STATES.IN_PROGRESS) {
-    await stateMachine.transition(callId, STATES.AWAITING_RESPONSE, metadata);
-    transitioned = await stateMachine.transition(callId, STATES.REQUIRES_FOLLOWUP, metadata);
-    if (transitioned) return;
-  }
-
-  await stateMachine.transition(callId, STATES.COMPLETED, metadata);
-  if (finalState === STATES.REQUIRES_FOLLOWUP) {
-    await stateMachine.transition(callId, STATES.REQUIRES_FOLLOWUP, metadata);
   }
 }
 
@@ -813,14 +797,8 @@ async function processPatientCall(patientId, jobData = {}) {
         await stateMachine.transition(callId, STATES.FAILED, { error: error.message });
         await eventBus.emit(EVENTS.CALL_FAILED, { callId, patientId, error: error.message });
 
-        // Check retry count
         const retryCount = await stateMachine.incrementRetry(callId);
-        const maxRetries = 3;
-
-        if (retryCount < maxRetries) {
-          console.log(`Scheduling retry ${retryCount}/${maxRetries} for call ${callId}`);
-          await eventBus.emit(EVENTS.CALL_RETRY_SCHEDULED, { callId, patientId, retryCount });
-        }
+        console.warn(`Call ${callId} failed on attempt ${retryCount}. No automatic retry will be scheduled.`);
       } catch (stateErr) {
         console.error('State transition error during failure handling:', stateErr.message);
       }
@@ -835,6 +813,27 @@ async function processPatientCall(patientId, jobData = {}) {
   }
 }
 
+function resolveStageProvidersFromEnv() {
+  const normalize = (value, fallback = 'gemini') => {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized === 'ollama' || normalized === 'gemini' ? normalized : fallback;
+  };
+
+  const defaultProvider = normalize(process.env.LLM_PROVIDER || 'gemini');
+  const chatProvider = normalize(process.env.LLM_CHAT_PROVIDER || defaultProvider, defaultProvider);
+  const realtimeProvider = normalize(process.env.LLM_REALTIME_PROVIDER || chatProvider, chatProvider);
+  const decisionProvider = normalize(process.env.LLM_DECISION_PROVIDER || chatProvider, chatProvider);
+  const analysisProvider = normalize(process.env.LLM_ANALYSIS_PROVIDER || defaultProvider, defaultProvider);
+
+  return {
+    defaultProvider,
+    chatProvider,
+    realtimeProvider,
+    decisionProvider,
+    analysisProvider
+  };
+}
+
 // Startup sequence
 async function startWorker() {
   console.log('Worker starting up...');
@@ -847,26 +846,28 @@ async function startWorker() {
     console.error('EventBus init failed:', err.message);
   }
 
-  // Wait for LLM to be ready.
-  // If using Gemini, skip Ollama wait since it's API-based.
-  const llmProvider = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
+  // Wait for every configured LLM stage provider to be ready.
+  const stageProviders = resolveStageProvidersFromEnv();
+  const enabledProviders = new Set(Object.values(stageProviders));
+  const usesOllama = enabledProviders.has('ollama');
+
   while (true) {
     let llmReady = false;
 
-    if (llmProvider === 'gemini') {
-      // Gemini doesn't need Ollama — just check API availability
-      llmReady = await llmService.checkAvailability();
-    } else {
-      // Ollama mode: wait for Ollama server first, then check models
+    if (usesOllama) {
       const ollamaReady = await waitForOllama();
       llmReady = ollamaReady ? await llmService.checkAvailability() : false;
+    } else {
+      llmReady = await llmService.checkAvailability();
     }
 
     if (llmReady) {
       break;
     }
 
-    console.warn(`Worker: LLM prerequisites are not ready (provider=${llmProvider}). Retrying in 30 seconds...`);
+    console.warn(
+      `Worker: LLM prerequisites are not ready (chat=${stageProviders.chatProvider}, realtime=${stageProviders.realtimeProvider}, decision=${stageProviders.decisionProvider}, analysis=${stageProviders.analysisProvider}). Retrying in 30 seconds...`
+    );
     await sleep(30000);
   }
 

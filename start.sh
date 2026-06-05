@@ -95,15 +95,19 @@ REDIS_HOST=redis
 REDIS_PORT=6379
 JWT_SECRET=supersecret_change_in_production
 LLM_PROVIDER=gemini
+LLM_CHAT_PROVIDER=ollama
+LLM_REALTIME_PROVIDER=ollama
+LLM_DECISION_PROVIDER=ollama
+LLM_ANALYSIS_PROVIDER=gemini
 GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
 GEMINI_MODEL_CHAT=gemini-2.0-flash
 GEMINI_MODEL_ANALYSIS=gemini-2.0-flash
 GEMINI_MODEL_DECISION=gemini-2.0-flash
 OLLAMA_URL=http://ollama:11434
 OLLAMA_MODEL_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_CHAT_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
+OLLAMA_MODEL_CHAT_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
 OLLAMA_MODEL_ANALYSIS_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_DECISION_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
+OLLAMA_MODEL_DECISION_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
 LLM_MAX_TOKENS=200
 LLM_NUM_CTX=1536
 LLM_NUM_CTX_REALTIME=1536
@@ -119,6 +123,7 @@ WHISPER_HOST=whisper
 WHISPER_PORT=9000
 WHISPER_MODEL_PATH=/models/whisper/ggml-small.en.bin
 STT_CHUNK_MS=2500
+STT_REALTIME_CHUNK_MS=1800
 STT_SILENCE_MS=800
 TTS_HOST=tts
 TTS_PORT=5002
@@ -131,6 +136,11 @@ MAX_CONVERSATION_TURNS=30
 MAX_RUNTIME_RAM_GB=14
 REQUIRE_SERVER_TTS=true
 VITE_REQUIRE_SERVER_TTS=true
+VITE_VAD_SPEECH_THRESHOLD=0.007
+VITE_VAD_SILENCE_THRESHOLD=0.0035
+VITE_VAD_MIN_SPEECH_MS=450
+VITE_VAD_END_SILENCE_MS=1000
+VITE_VAD_MAX_UTTERANCE_MS=12000
 NODE_ENV=production
 EOF
     success ".env file created"
@@ -143,6 +153,30 @@ fi
 get_env_value() {
     local key="$1"
     grep -E "^${key}=" .env | tail -n 1 | cut -d '=' -f2- | tr -d '\r' | xargs
+}
+
+resolve_stage_provider() {
+    local key="$1"
+    local fallback="$2"
+    local value
+    value=$(get_env_value "$key")
+    if [ -z "$value" ]; then
+        echo "$fallback"
+        return
+    fi
+    echo "$value"
+}
+
+uses_provider() {
+    local target="$1"
+    shift
+    local provider
+    for provider in "$@"; do
+        if [ "$provider" = "$target" ]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 resolve_model_host_path() {
@@ -181,8 +215,24 @@ LLM_PROVIDER=$(get_env_value "LLM_PROVIDER")
 if [ -z "$LLM_PROVIDER" ]; then
     LLM_PROVIDER="gemini"
 fi
+LLM_CHAT_PROVIDER=$(resolve_stage_provider "LLM_CHAT_PROVIDER" "$LLM_PROVIDER")
+LLM_REALTIME_PROVIDER=$(resolve_stage_provider "LLM_REALTIME_PROVIDER" "$LLM_CHAT_PROVIDER")
+LLM_DECISION_PROVIDER=$(resolve_stage_provider "LLM_DECISION_PROVIDER" "$LLM_CHAT_PROVIDER")
+LLM_ANALYSIS_PROVIDER=$(resolve_stage_provider "LLM_ANALYSIS_PROVIDER" "$LLM_PROVIDER")
 
-if [ "$LLM_PROVIDER" = "ollama" ]; then
+USES_OLLAMA=false
+if uses_provider "ollama" "$LLM_PROVIDER" "$LLM_CHAT_PROVIDER" "$LLM_REALTIME_PROVIDER" "$LLM_DECISION_PROVIDER" "$LLM_ANALYSIS_PROVIDER"; then
+    USES_OLLAMA=true
+fi
+
+USES_GEMINI=false
+if uses_provider "gemini" "$LLM_PROVIDER" "$LLM_CHAT_PROVIDER" "$LLM_REALTIME_PROVIDER" "$LLM_DECISION_PROVIDER" "$LLM_ANALYSIS_PROVIDER"; then
+    USES_GEMINI=true
+fi
+
+info "LLM routing: chat=${LLM_CHAT_PROVIDER}, realtime=${LLM_REALTIME_PROVIDER}, decision=${LLM_DECISION_PROVIDER}, analysis=${LLM_ANALYSIS_PROVIDER}"
+
+if [ "$USES_OLLAMA" = "true" ]; then
     OLLAMA_MODEL_PATH=$(get_env_value "OLLAMA_MODEL_PATH")
     OLLAMA_MODEL_CHAT_PATH=$(get_env_value "OLLAMA_MODEL_CHAT_PATH")
     OLLAMA_MODEL_ANALYSIS_PATH=$(get_env_value "OLLAMA_MODEL_ANALYSIS_PATH")
@@ -213,13 +263,18 @@ if [ "$LLM_PROVIDER" = "ollama" ]; then
     assert_local_file "Ollama decision model" "$HOST_OLLAMA_MODEL_DECISION_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
     success "Local Ollama model files are ready"
 else
-    info "Using Gemini API as LLM provider (skipping Ollama model validation)"
+    info "No stage is routed through Ollama (skipping Ollama model validation)"
+fi
+
+if [ "$USES_GEMINI" = "true" ]; then
     GEMINI_API_KEY=$(get_env_value "GEMINI_API_KEY")
     if [ -z "$GEMINI_API_KEY" ] || [ "$GEMINI_API_KEY" = "YOUR_GEMINI_API_KEY_HERE" ]; then
         warning "⚠ GEMINI_API_KEY is not set in .env! Update it before making calls."
     else
         success "Gemini API key is configured"
     fi
+else
+    info "No stage is routed through Gemini API"
 fi
 
 WHISPER_MODEL_PATH=$(get_env_value "WHISPER_MODEL_PATH")
@@ -320,8 +375,8 @@ info "Starting containers..."
 info "This will take 2-3 minutes for initialization"
 echo ""
 
-# Start services (use --profile ollama if using Ollama provider)
-if [ "$LLM_PROVIDER" = "ollama" ]; then
+# Start services (enable Ollama profile whenever any stage uses local models)
+if [ "$USES_OLLAMA" = "true" ]; then
     docker compose --profile ollama up -d
 else
     docker compose up -d
@@ -371,8 +426,8 @@ else
     error "Redis failed to start. Check logs: docker logs healthcare_redis"
 fi
 
-# Ollama (only in ollama mode)
-if [ "$LLM_PROVIDER" = "ollama" ]; then
+# Ollama (only when at least one stage uses local models)
+if [ "$USES_OLLAMA" = "true" ]; then
     info "Waiting for Ollama..."
     if wait_for_service "healthcare_ollama"; then
         success "Ollama is ready"
@@ -380,7 +435,7 @@ if [ "$LLM_PROVIDER" = "ollama" ]; then
         error "Ollama failed to start. Check logs: docker logs healthcare_ollama"
     fi
 else
-    info "Using Gemini API — Ollama container not required"
+    info "Ollama container not required for current stage routing"
 fi
 
 # Whisper

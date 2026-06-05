@@ -213,19 +213,36 @@ router.get('/', authenticateToken, requireHospitalAdmin, async (req, res) => {
   }
 });
 
+const VALID_CATEGORIES = new Set(['diabetes', 'heart_disease', 'asthma', 'hypertension', 'other']);
+const PHONE_REGEX = /^[+]?[\d\s()-]{7,20}$/;
+
+function sanitizeString(value, maxLen = 255) {
+  const str = String(value || '').trim().replace(/\s+/g, ' ');
+  return str.slice(0, maxLen);
+}
+
 // Add single patient
 router.post('/', authenticateToken, requireHospitalAdmin, async (req, res) => {
   try {
-    const { name, phone, category, metadata } = req.body;
+    const name = sanitizeString(req.body.name);
+    const phone = sanitizeString(req.body.phone, 50);
+    const category = sanitizeString(req.body.category, 50).toLowerCase();
+    const metadata = req.body.metadata || {};
 
-    if (!name || !phone || !category) {
-      return res.status(400).json({ error: 'Name, phone, and category required' });
+    if (!name || name.length < 2) {
+      return res.status(400).json({ error: 'Valid patient name required (min 2 characters)' });
+    }
+    if (!phone || !PHONE_REGEX.test(phone)) {
+      return res.status(400).json({ error: 'Valid phone number required' });
+    }
+    if (!VALID_CATEGORIES.has(category)) {
+      return res.status(400).json({ error: `Invalid category. Must be one of: ${[...VALID_CATEGORIES].join(', ')}` });
     }
 
     const result = await query(
       `INSERT INTO patients (organization_id, name, phone, category, status, metadata)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [req.user.organizationId, name, phone, category, 'active', JSON.stringify(metadata || {})]
+      [req.user.organizationId, name, phone, category, 'active', JSON.stringify(metadata)]
     );
 
     res.status(201).json({ patient: result.rows[0] });
@@ -238,10 +255,27 @@ router.post('/', authenticateToken, requireHospitalAdmin, async (req, res) => {
 // Update patient
 router.put('/:id', authenticateToken, requireHospitalAdmin, async (req, res) => {
   try {
-    const patientId = req.params.id;
-    const { name, phone, category, metadata, status } = req.body;
+    const patientId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(patientId) || patientId <= 0) {
+      return res.status(400).json({ error: 'Invalid patient ID' });
+    }
 
-    // Verify ownership
+    const name = sanitizeString(req.body.name);
+    const phone = sanitizeString(req.body.phone, 50);
+    const category = sanitizeString(req.body.category, 50).toLowerCase();
+    const metadata = req.body.metadata || {};
+    const status = ['active', 'pending', 'inactive'].includes(req.body.status) ? req.body.status : 'active';
+
+    if (!name || name.length < 2) {
+      return res.status(400).json({ error: 'Valid patient name required' });
+    }
+    if (!phone || !PHONE_REGEX.test(phone)) {
+      return res.status(400).json({ error: 'Valid phone number required' });
+    }
+    if (!VALID_CATEGORIES.has(category)) {
+      return res.status(400).json({ error: `Invalid category. Must be one of: ${[...VALID_CATEGORIES].join(', ')}` });
+    }
+
     const checkResult = await query(
       'SELECT id FROM patients WHERE id = $1 AND organization_id = $2',
       [patientId, req.user.organizationId]
@@ -256,7 +290,7 @@ router.put('/:id', authenticateToken, requireHospitalAdmin, async (req, res) => 
        SET name = $1, phone = $2, category = $3, metadata = $4, status = $5, updated_at = CURRENT_TIMESTAMP
        WHERE id = $6 AND organization_id = $7
        RETURNING *`,
-      [name, phone, category, JSON.stringify(metadata || {}), status || 'active', patientId, req.user.organizationId]
+      [name, phone, category, JSON.stringify(metadata), status, patientId, req.user.organizationId]
     );
 
     res.json({ patient: result.rows[0] });

@@ -9,7 +9,7 @@ router.get('/', authenticateToken, async (req, res) => {
   try {
     const { campaignId } = req.query;
     
-    // Build WHERE clause
+    // Build WHERE clause - join calls directly to campaigns (calls has campaign_id)
     let whereClause = 'WHERE cam.user_id = $1';
     const params = [req.user.id];
     
@@ -24,61 +24,56 @@ router.get('/', authenticateToken, async (req, res) => {
       [req.user.id]
     );
 
-    // Total calls
+    // Total calls - direct join calls -> campaigns
     const callsResult = await query(`
       SELECT COUNT(*) as count FROM calls c
-      JOIN patients p ON c.patient_id = p.id
-      JOIN campaigns cam ON p.campaign_id = cam.id
+      JOIN campaigns cam ON c.campaign_id = cam.id
       ${whereClause}
     `, params);
 
     // Calls by state
     const stateResult = await query(`
-      SELECT state, COUNT(*) as count FROM calls c
-      JOIN patients p ON c.patient_id = p.id
-      JOIN campaigns cam ON p.campaign_id = cam.id
+      SELECT c.state, COUNT(*) as count FROM calls c
+      JOIN campaigns cam ON c.campaign_id = cam.id
       ${whereClause}
-      GROUP BY state
+      GROUP BY c.state
     `, params);
 
     // Confirmed appointments
     const confirmedResult = await query(`
       SELECT COUNT(*) as count FROM calls c
-      JOIN patients p ON c.patient_id = p.id
-      JOIN campaigns cam ON p.campaign_id = cam.id
+      JOIN campaigns cam ON c.campaign_id = cam.id
       ${whereClause} AND c.appointment_confirmed = true
     `, params);
 
     // Sentiment breakdown
     const sentimentResult = await query(`
-      SELECT sentiment, COUNT(*) as count FROM calls c
-      JOIN patients p ON c.patient_id = p.id
-      JOIN campaigns cam ON p.campaign_id = cam.id
+      SELECT c.sentiment, COUNT(*) as count FROM calls c
+      JOIN campaigns cam ON c.campaign_id = cam.id
       ${whereClause}
-      GROUP BY sentiment
+      GROUP BY c.sentiment
     `, params);
 
     // Barrier analysis (from structured_output)
     const barrierResult = await query(`
       SELECT 
-        structured_output->>'barrier_type' as barrier_type,
+        c.structured_output->>'barrier_type' as barrier_type,
         COUNT(*) as count
       FROM calls c
-      JOIN patients p ON c.patient_id = p.id
-      JOIN campaigns cam ON p.campaign_id = cam.id
+      JOIN campaigns cam ON c.campaign_id = cam.id
       ${whereClause}
-      AND structured_output->>'barrier_type' IS NOT NULL
-      AND structured_output->>'barrier_type' != 'none'
-      GROUP BY structured_output->>'barrier_type'
+      AND c.structured_output->>'barrier_type' IS NOT NULL
+      AND c.structured_output->>'barrier_type' != 'none'
+      GROUP BY c.structured_output->>'barrier_type'
     `, params);
 
     // Recent calls
     const recentCallsResult = await query(`
       SELECT c.id, c.sentiment, c.appointment_confirmed, c.state, c.created_at,
-             p.name as patient_name, cam.name as campaign_name
+             COALESCE(p.name, 'Unknown') as patient_name, cam.name as campaign_name
       FROM calls c
-      JOIN patients p ON c.patient_id = p.id
-      JOIN campaigns cam ON p.campaign_id = cam.id
+      LEFT JOIN patients p ON c.patient_id = p.id
+      JOIN campaigns cam ON c.campaign_id = cam.id
       ${whereClause}
       ORDER BY c.created_at DESC
       LIMIT 10

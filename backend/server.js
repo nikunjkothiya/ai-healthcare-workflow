@@ -14,6 +14,8 @@ const patientsRoutes = require('./routes/patients');
 const { authenticateToken, requireHospitalAdmin } = require('./middleware/auth');
 const { initDatabase } = require('./services/database');
 const { EventBus } = require('./orchestrator/eventBus');
+const sttService = require('./services/ai/sttService');
+const ttsService = require('./services/ai/ttsService');
 
 dotenv.config();
 
@@ -31,7 +33,7 @@ eventBus.listen().then(() => {
 // Make eventBus available globally
 global.eventBus = eventBus;
 
-// Best-effort LLM availability check on startup.
+// Best-effort LLM, STT, and TTS availability checks on startup.
 // This does NOT block server startup but gives early visibility into model health.
 llmService.checkAvailability().then((ok) => {
   if (!ok) {
@@ -41,10 +43,45 @@ llmService.checkAvailability().then((ok) => {
   console.warn('LLM startup availability check threw an error:', err.message);
 });
 
+sttService.healthCheck().then((ok) => {
+  if (ok) {
+    console.log(`STT service is healthy (${sttService.sttProvider})`);
+  } else {
+    console.warn(`STT service health check failed at startup (${sttService.sttProvider}). Realtime transcription may fail.`);
+  }
+}).catch((err) => {
+  console.warn('STT startup health check threw an error:', err.message);
+});
+
+ttsService.healthCheck().then((ok) => {
+  if (ok) {
+    console.log(`TTS service is healthy (${ttsService.ttsProvider})`);
+  } else {
+    console.warn(`TTS service health check failed at startup (${ttsService.ttsProvider}). Speech synthesis may fail.`);
+  }
+}).catch((err) => {
+  console.warn('TTS startup health check threw an error:', err.message);
+});
+
 // Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Rate limiting for auth endpoints
+const rateLimit = require('express-rate-limit');
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use('/auth', authLimiter);
 
 // Health check
 app.get('/health', (req, res) => {

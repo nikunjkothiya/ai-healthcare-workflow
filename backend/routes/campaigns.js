@@ -9,8 +9,9 @@ const { EventBus, EVENTS } = require('../orchestrator/eventBus');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Initialize orchestrator components
-const eventBus = new EventBus();
+function getEventBus() {
+  return global.eventBus || new EventBus();
+}
 
 async function removeQueuedJobsForCampaign(campaignId) {
   const jobStates = ['waiting', 'delayed', 'paused', 'prioritized'];
@@ -233,75 +234,62 @@ router.post('/:id/patients', authenticateToken, upload.single('file'), async (re
 
 // Start campaign
 router.post('/:id/start', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
   try {
     const campaignId = req.params.id;
     const callMode = req.body?.callMode === 'websocket' ? 'websocket' : 'simulation';
     console.log(`[CAMPAIGN START] Campaign ${campaignId}: callMode from request = "${req.body?.callMode}", using: "${callMode}"`);
 
-    // Verify campaign ownership
-    const campaignResult = await query(
-      'SELECT * FROM campaigns WHERE id = $1 AND user_id = $2',
+    await client.query('BEGIN');
+
+    // Verify campaign ownership with row lock
+    const campaignResult = await client.query(
+      'SELECT * FROM campaigns WHERE id = $1 AND user_id = $2 FOR UPDATE',
       [campaignId, req.user.id]
     );
 
     if (campaignResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Campaign not found' });
     }
 
-    // Get pending patients
-    const patientsResult = await query(
-      'SELECT * FROM patients WHERE campaign_id = $1 AND status = $2',
+    const campaign = campaignResult.rows[0];
+    if (campaign.status === 'running') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Campaign already started', message: 'This campaign is already running.' });
+    }
+
+    // Get pending patients with row lock
+    const patientsResult = await client.query(
+      'SELECT * FROM patients WHERE campaign_id = $1 AND status = $2 FOR UPDATE',
       [campaignId, 'pending']
     );
 
     if (patientsResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'No pending patients in campaign' });
     }
-
-    const campaign = campaignResult.rows[0];
 
     // Resolve scheduling
     const now = Date.now();
     const scheduleAtMs = campaign.schedule_time ? new Date(campaign.schedule_time).getTime() : now;
     const baseDelayMs = Number.isFinite(scheduleAtMs) ? Math.max(0, scheduleAtMs - now) : 0;
-    const spacingMs = parseInt(process.env.CALL_SPACING_MS, 10) || 15000; // 15s between queued calls
+    const spacingMs = parseInt(process.env.CALL_SPACING_MS, 10) || 15000;
     const scheduledStart = new Date(now + baseDelayMs).toISOString();
 
-    // Update campaign status with race condition prevention
-    await query(
-      `UPDATE campaigns 
-       SET status = $1, updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $2 AND status IN ('pending', 'scheduled')`,
+    // Update campaign status
+    await client.query(
+      `UPDATE campaigns SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
       [baseDelayMs > 0 ? 'scheduled' : 'running', campaignId]
     );
 
-    // Check if update succeeded
-    const statusCheck = await query(
-      'SELECT status FROM campaigns WHERE id = $1',
-      [campaignId]
-    );
-
-    if (statusCheck.rows[0]?.status === 'running' && baseDelayMs === 0) {
-      // Campaign already running, check if it was just started by us or by another request
-      const existingJobs = await query(
-        `SELECT COUNT(*) as count FROM patients 
-         WHERE campaign_id = $1 AND status = 'queued'`,
-        [campaignId]
-      );
-
-      if (existingJobs.rows[0]?.count > 0) {
-        return res.status(400).json({
-          error: 'Campaign already started',
-          message: 'This campaign is already running. Please wait for it to complete.'
-        });
-      }
-    }
-
-    // Mark patients as queued for this run
-    await query(
+    // Mark patients as queued
+    await client.query(
       'UPDATE patients SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE campaign_id = $2 AND status = $3',
       ['queued', campaignId, 'pending']
     );
+
+    await client.query('COMMIT');
 
     // Add jobs to queue with event-based scheduling
     const jobs = [];
@@ -332,7 +320,7 @@ router.post('/:id/start', authenticateToken, async (req, res) => {
       });
 
       // Emit queued event
-      await eventBus.emit(EVENTS.CALL_QUEUED, {
+      await getEventBus().emit(EVENTS.CALL_QUEUED, {
         campaignId,
         organizationId: req.user.organizationId,
         patientId: patient.id,
@@ -353,8 +341,11 @@ router.post('/:id/start', authenticateToken, async (req, res) => {
       callLinks
     });
   } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('Start campaign error:', error);
     res.status(500).json({ error: 'Failed to start campaign' });
+  } finally {
+    client.release();
   }
 });
 

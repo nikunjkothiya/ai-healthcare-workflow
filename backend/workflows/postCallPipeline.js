@@ -122,10 +122,12 @@ class PostCallPipeline {
          cam.name AS campaign_name,
          cam.campaign_type AS campaign_type,
          cam.script_template AS campaign_script_template,
-         cam.schedule_time AS campaign_schedule_time
+         cam.schedule_time AS campaign_schedule_time,
+         ac.prompt_template AS campaign_prompt_template
        FROM calls c
        LEFT JOIN patients p ON p.id = c.patient_id
        LEFT JOIN campaigns cam ON cam.id = c.campaign_id
+       LEFT JOIN agent_configs ac ON ac.campaign_id = cam.id
        WHERE c.id = $1
        LIMIT 1`,
       [callId]
@@ -155,7 +157,7 @@ class PostCallPipeline {
         id: row.campaign_id,
         name: row.campaign_name,
         campaign_type: row.campaign_type || 'appointment_confirmation',
-        script_template: row.campaign_script_template || '',
+        script_template: row.campaign_prompt_template || row.campaign_script_template || '',
         schedule_time: row.campaign_schedule_time || null
       }
     };
@@ -194,9 +196,10 @@ class PostCallPipeline {
       console.log('[POST-CALL] Consistency fix: campaign_goal_achieved=true + confirmation phrase → appointment_confirmed=true');
     }
 
-    // If appointment confirmed with no barriers/risks, no manual followup needed
+    // If campaign goal achieved or appointment confirmed, and no barriers/risks, no manual followup needed
     let requiresManualFollowup = Boolean(strict.requires_manual_followup);
-    if (appointmentConfirmed && strict.risk_level === 'low' && strict.risk_flags.length === 0) {
+    const goalAchievedOrConfirmed = appointmentConfirmed || Boolean(strict.campaign_goal_achieved);
+    if (goalAchievedOrConfirmed && strict.risk_level === 'low' && strict.risk_flags.length === 0) {
       requiresManualFollowup = false;
     }
 
@@ -205,9 +208,7 @@ class PostCallPipeline {
     const analysisStatus = transcript.length < this.minTranscriptLength ? 'insufficient_data' : 'completed';
 
     // Determine analysis model identifier for tracking
-    const analysisModelId = llmService.isGemini
-      ? (llmService.geminiAnalysisModel || 'gemini-2.0-flash')
-      : (llmService.analysisModel || 'healthcare-analysis');
+    const analysisModelId = llmService.getAnalysisModelIdentifier();
 
     return {
       structured_output: {

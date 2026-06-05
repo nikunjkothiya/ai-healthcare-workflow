@@ -74,8 +74,12 @@ const CAMPAIGN_PROMPTS = {
 
 class LLMService {
   constructor() {
-    this.provider = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
+    this.provider = this._normalizeProviderName(process.env.LLM_PROVIDER || 'gemini');
     this.ollamaUrl = process.env.OLLAMA_URL || 'http://ollama:11434';
+    this.chatProvider = this._resolveStageProvider(process.env.LLM_CHAT_PROVIDER, this.provider);
+    this.realtimeProvider = this._resolveStageProvider(process.env.LLM_REALTIME_PROVIDER, this.chatProvider);
+    this.decisionProvider = this._resolveStageProvider(process.env.LLM_DECISION_PROVIDER, this.chatProvider);
+    this.analysisProvider = this._resolveStageProvider(process.env.LLM_ANALYSIS_PROVIDER, this.provider);
 
     // Gemini configuration
     this.geminiApiKey = process.env.GEMINI_API_KEY || '';
@@ -84,20 +88,38 @@ class LLMService {
     this.geminiDecisionModel = process.env.GEMINI_MODEL_DECISION || 'gemini-2.0-flash';
     this.geminiClient = null;
 
-    if (this.provider === 'gemini' && this.geminiApiKey && this.geminiApiKey !== 'YOUR_GEMINI_API_KEY_HERE') {
+    if (this.geminiApiKey && this.geminiApiKey !== 'YOUR_GEMINI_API_KEY_HERE') {
       this.geminiClient = new GoogleGenerativeAI(this.geminiApiKey);
     }
 
-    // Ollama model tags (fallback)
-    this.model = 'healthcare-base';
-    this.chatModel = 'healthcare-chat';
-    this.analysisModel = 'healthcare-analysis';
-    this.decisionModel = 'healthcare-decision';
-    this.analysisNumCtx = parseInt(process.env.LLM_NUM_CTX_ANALYSIS, 10) || 8192;
-    this.analysisMaxTokens = parseInt(process.env.LLM_MAX_TOKENS_ANALYSIS, 10) || 1200;
+    // Ollama model tags — stage-specific with env override
+    // Recommended defaults (all run on 8-16GB RAM):
+    //   Chat:     llama3.2:3b  — best structured JSON output (critical for live calls)
+    //   Decision: llama3.2:3b  — same model, different prompt
+    //   Analysis: qwen3:8b      — deeper reasoning for post-call
+    // Alternatives: qwen3:4b (fast dual-mode), phi:3.8b (best reasoning), gemma3:4b (multilingual)
+    this.chatModel = process.env.OLLAMA_MODEL_CHAT || 'llama3.2:3b';
+    this.decisionModel = process.env.OLLAMA_MODEL_DECISION || 'llama3.2:3b';
+    this.analysisModel = process.env.OLLAMA_MODEL_ANALYSIS || 'qwen3:8b';
+    this.analysisNumCtx = parseInt(process.env.LLM_NUM_CTX_ANALYSIS, 10) || 4096;
+    this.analysisMaxTokens = parseInt(process.env.LLM_MAX_TOKENS_ANALYSIS, 10) || 768;
     this.maxRetries = 2;
     this.retryDelayMs = 1500;
     this.available = null;
+    this.providerAvailability = {
+      gemini: null,
+      ollama: null
+    };
+
+    // Model-specific parameter overrides based on model family
+    this._modelConfigs = {
+      'qwen3':    { temperature: 0.3, top_p: 0.85, repeat_penalty: 1.05 },
+      'phi':      { temperature: 0.2, top_p: 0.9,  repeat_penalty: 1.0  },
+      'llama3.2': { temperature: 0.25, top_p: 0.9, repeat_penalty: 1.1  },
+      'gemma3':   { temperature: 0.3, top_p: 0.9,  repeat_penalty: 1.0  },
+      'mistral':  { temperature: 0.3, top_p: 0.85, repeat_penalty: 1.05 },
+      'default':  { temperature: 0.3, top_p: 0.85, repeat_penalty: 1.05 }
+    };
 
     // Model runtime manager for Ollama mode only
     this.runtimeManager = new ModelRuntimeManager({
@@ -107,21 +129,56 @@ class LLMService {
       maxRamGb: parseFloat(process.env.MAX_RUNTIME_RAM_GB || '14')
     });
 
-    this.configError = this._validateModelConfig();
+    this.configErrors = this._validateModelConfig();
+    this.configError = this.configErrors[0] || null;
+  }
+
+  _normalizeProviderName(provider, fallback = 'gemini') {
+    const normalized = String(provider || '').trim().toLowerCase();
+    if (normalized === 'gemini' || normalized === 'ollama') {
+      return normalized;
+    }
+    return fallback;
+  }
+
+  _resolveStageProvider(provider, fallback) {
+    return this._normalizeProviderName(provider || fallback, fallback || 'gemini');
+  }
+
+  _configuredStageProviders() {
+    return {
+      default: this.provider,
+      chat: this.chatProvider,
+      realtime: this.realtimeProvider,
+      decision: this.decisionProvider,
+      analysis: this.analysisProvider
+    };
+  }
+
+  getProviderForStage(stage = 'default') {
+    const providers = this._configuredStageProviders();
+    return providers[stage] || this.provider;
+  }
+
+  usesProvider(provider) {
+    const normalized = this._normalizeProviderName(provider, '');
+    return Object.values(this._configuredStageProviders()).includes(normalized);
   }
 
   _validateModelConfig() {
-    if (this.provider === 'gemini') {
+    const errors = [];
+
+    if (this.usesProvider('gemini')) {
       if (!this.geminiApiKey || this.geminiApiKey === 'YOUR_GEMINI_API_KEY_HERE') {
-        return 'GEMINI_API_KEY not set. Set LLM_PROVIDER=ollama to use local models.';
+        errors.push('GEMINI_API_KEY not set. Set stage providers to ollama if you want a fully local workflow.');
       }
-      return null;
     }
 
-    if (!this.model || !this.chatModel || !this.analysisModel || !this.decisionModel) {
-      return 'Internal Ollama model tags are not configured.';
+    if (this.usesProvider('ollama') && (!this.model || !this.chatModel || !this.analysisModel || !this.decisionModel)) {
+      errors.push('Internal Ollama model tags are not configured.');
     }
-    return null;
+
+    return errors;
   }
 
   // ── Provider Detection ─────────────────────────────────────────────────
@@ -130,35 +187,47 @@ class LLMService {
     return this.provider === 'gemini' && this.geminiClient !== null;
   }
 
+  get usesGeminiForAnalysis() {
+    return this.analysisProvider === 'gemini' && this.geminiClient !== null;
+  }
+
+  getAnalysisModelIdentifier() {
+    return this.usesGeminiForAnalysis
+      ? (this.geminiAnalysisModel || 'gemini-2.5-flash')
+      : (this.analysisModel || 'healthcare-analysis');
+  }
+
   // ── Availability Check ─────────────────────────────────────────────────
 
-  async checkAvailability() {
-    if (this.configError) {
-      console.error(`LLM configuration error: ${this.configError}`);
-      this.available = false;
+  async _checkGeminiAvailability() {
+    if (!this.geminiClient) {
+      console.error('LLM: Gemini API key is missing or invalid for a stage that requires Gemini.');
+      this.providerAvailability.gemini = false;
       return false;
     }
 
-    if (this.isGemini) {
-      try {
-        // Quick test call to verify API key works
-        const model = this.geminiClient.getGenerativeModel({ model: this.geminiChatModel });
-        const result = await model.generateContent({
-          contents: [{ role: 'user', parts: [{ text: 'Reply with just "ok"' }] }],
-          generationConfig: { maxOutputTokens: 5 }
-        });
-        const text = result.response?.text?.() || '';
-        console.log(`LLM: Connected to Gemini API (chat=${this.geminiChatModel}, analysis=${this.geminiAnalysisModel}, decision=${this.geminiDecisionModel})`);
-        this.available = true;
-        return true;
-      } catch (error) {
-        console.error(`LLM: Gemini API not available: ${error.message}`);
-        this.available = false;
-        return false;
+    try {
+      const model = this.geminiClient.getGenerativeModel({ model: this.geminiChatModel });
+      const result = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: 'Reply with just "ok"' }] }],
+        generationConfig: { maxOutputTokens: 5 }
+      });
+      const text = result.response?.text?.() || '';
+      if (!String(text || '').trim()) {
+        throw new Error('Empty response from Gemini availability probe');
       }
-    }
 
-    // Ollama availability check
+      console.log(`LLM: Connected to Gemini API (chat=${this.geminiChatModel}, analysis=${this.geminiAnalysisModel}, decision=${this.geminiDecisionModel})`);
+      this.providerAvailability.gemini = true;
+      return true;
+    } catch (error) {
+      console.error(`LLM: Gemini API not available: ${error.message}`);
+      this.providerAvailability.gemini = false;
+      return false;
+    }
+  }
+
+  async _checkOllamaAvailability() {
     try {
       const response = await axios.get(`${this.ollamaUrl}/api/tags`, { timeout: 5000 });
       const models = response.data.models || [];
@@ -178,18 +247,65 @@ class LLMService {
         }
       }
 
-      this.available = missingModels.length === 0;
-      if (!this.available) {
-        console.error(`LLM: Missing required model(s): ${missingModels.join(', ')}`);
+      const available = missingModels.length === 0;
+      this.providerAvailability.ollama = available;
+      if (!available) {
+        console.error(`LLM: Missing required Ollama model(s): ${missingModels.join(', ')}`);
       } else {
         console.log(`LLM: Connected to Ollama (models: ${availableModelNames.join(', ')})`);
       }
-      return this.available;
+      return available;
     } catch (error) {
       console.error(`LLM: Ollama not reachable at ${this.ollamaUrl}: ${error.message}`);
+      this.providerAvailability.ollama = false;
+      return false;
+    }
+  }
+
+  async _ensureProviderAvailable(provider, label = 'LLM') {
+    const normalized = this._normalizeProviderName(provider, this.provider);
+    const known = this.providerAvailability[normalized];
+    if (known === true) {
+      return normalized;
+    }
+
+    const ok = normalized === 'gemini'
+      ? await this._checkGeminiAvailability()
+      : await this._checkOllamaAvailability();
+
+    if (!ok) {
+      throw new Error(`${label} provider unavailable (${normalized})`);
+    }
+    return normalized;
+  }
+
+  async checkAvailability() {
+    if (this.configErrors.length > 0) {
+      for (const message of this.configErrors) {
+        console.error(`LLM configuration error: ${message}`);
+      }
       this.available = false;
       return false;
     }
+
+    let geminiOk = true;
+    let ollamaOk = true;
+
+    if (this.usesProvider('gemini')) {
+      geminiOk = await this._checkGeminiAvailability();
+    }
+
+    if (this.usesProvider('ollama')) {
+      ollamaOk = await this._checkOllamaAvailability();
+    }
+
+    this.available = geminiOk && ollamaOk;
+    if (this.available) {
+      console.log(
+        `LLM routing: chat=${this.chatProvider}, realtime=${this.realtimeProvider}, decision=${this.decisionProvider}, analysis=${this.analysisProvider}`
+      );
+    }
+    return this.available;
   }
 
   // ── Utility Methods ────────────────────────────────────────────────────
@@ -307,10 +423,30 @@ class LLMService {
     const raw = String(text || '').replace(/\r/g, '').trim();
     if (!raw) return fallback;
 
+    // Forbidden headers — prompt leakage patterns
     const forbiddenHeaders = [
       'campaign instructions', 'primary goals', 'patient profile',
       'recent conversation', 'latest patient message', 'assistant:',
-      'introduction:', 'your primary task', 'rules:', 'patient details:'
+      'introduction:', 'your primary task', 'rules:', 'patient details:',
+      'conversation rules', 'guidelines:', 'role:', 'system:',
+      'you are a', 'your reply must', 'return only json',
+      'json requirements', 'schema', '```json', '```'
+    ];
+
+    // Forbidden content patterns — AI disclosure, medical advice, inappropriate
+    const forbiddenPatterns = [
+      /\bas an (AI|artificial intelligence|language model|LLM|model)\b/i,
+      /\bI('?m| am) (an |the )?(AI|artificial intelligence|language model|bot|assistant robot)\b/i,
+      /\bdiagnos(e|is|ed|ing)\b/i,
+      /\byou (have|may have|might have|probably have|are suffering from)\b/i,
+      /\b(take|prescribe|recommend) (this |the |a )?(medication|medicine|drug|pill|dose)\b/i,
+      /\b(you should|I recommend you|you need to) (take|get|undergo|have)\b/i,
+      /\bJSON\s*(response|output|format|schema|object)\b/i,
+      /\{\s*"reply"\s*:/i,
+      /^\s*\{.*\}\s*$/,
+      /optional short spoken message/i,
+      /ROLE\s*:/i,
+      /CAMPAIGN/i
     ];
 
     const cleanedLines = raw
@@ -324,11 +460,17 @@ class LLMService {
 
     let cleaned = cleanedLines.join(' ').replace(/\s+/g, ' ').trim();
     cleaned = cleaned.replace(/^["'`]+|["'`]+$/g, '');
-    cleaned = cleaned.replace(/^(assistant|agent)\s*:\s*/i, '');
+    cleaned = cleaned.replace(/^(assistant|agent|ai|bot)\s*:\s*/i, '');
     cleaned = cleaned.replace(/^introduction:\s*/i, '');
     cleaned = cleaned.replace(/>>/g, ' ').replace(/\s+/g, ' ').trim();
 
-    if (/optional short spoken message/i.test(cleaned)) return fallback;
+    // Check forbidden patterns
+    for (const pattern of forbiddenPatterns) {
+      if (pattern.test(cleaned)) {
+        console.warn(`[SANITIZE] Blocked forbidden pattern in reply: "${this._truncate(cleaned, 80)}"`);
+        return fallback;
+      }
+    }
 
     // Collapse verbose list-style output
     if (/^\d+\./.test(cleaned) || cleaned.toLowerCase().includes('step 1')) {
@@ -387,10 +529,30 @@ class LLMService {
 
   /**
    * Generate text from LLM with retries.
-   * Routes to Gemini API or Ollama based on LLM_PROVIDER.
+   * Routes to Gemini API or Ollama based on stage-specific provider settings.
    */
+  _getModelConfig(modelName) {
+    const key = Object.keys(this._modelConfigs).find(k => 
+      k !== 'default' && String(modelName || '').toLowerCase().startsWith(k)
+    );
+    return this._modelConfigs[key || 'default'];
+  }
+
   async generate(prompt, options = {}) {
-    if (this.isGemini) {
+    const provider = options.provider
+      ? this._normalizeProviderName(options.provider, this.provider)
+      : options.stage
+        ? this.getProviderForStage(options.stage)
+        : options.model === this.analysisModel
+          ? this.analysisProvider
+          : options.model === this.decisionModel
+            ? this.decisionProvider
+            : this.chatProvider;
+
+    if (provider === 'gemini') {
+      if (!this.geminiClient) {
+        throw new Error('Gemini client not configured');
+      }
       return this._generateGemini(prompt, options);
     }
     return this._generateOllama(prompt, options);
@@ -455,10 +617,11 @@ class LLMService {
   }
 
   async _generateOllama(prompt, options = {}) {
-    const maxTokens = options.max_tokens ?? (parseInt(process.env.LLM_MAX_TOKENS, 10) || 150);
-    const selectedModel = options.model || this.model;
-    const timeoutMs = options.timeout_ms ?? (parseInt(process.env.LLM_TIMEOUT_MS, 10) || 45000);
-    const numCtx = options.num_ctx ?? (parseInt(process.env.LLM_NUM_CTX, 10) || 512);
+    const maxTokens = options.max_tokens ?? this.maxTokens;
+    const selectedModel = options.model || this.chatModel;
+    const timeoutMs = options.timeout_ms ?? this.timeoutMs;
+    const numCtx = options.num_ctx ?? this.numCtx;
+    const modelConfig = this._getModelConfig(selectedModel);
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
@@ -468,8 +631,9 @@ class LLMService {
           stream: false,
           keep_alive: options.keep_alive || undefined,
           options: {
-            temperature: options.temperature ?? 0.7,
-            top_p: options.top_p ?? 0.9,
+            temperature: options.temperature ?? modelConfig.temperature,
+            top_p: options.top_p ?? modelConfig.top_p,
+            repeat_penalty: modelConfig.repeat_penalty,
             num_predict: maxTokens,
             num_ctx: numCtx
           }
@@ -525,9 +689,7 @@ class LLMService {
    * Generate an in-call conversational reply.
    */
   async generateConversationResponse(input, legacySystemPrompt) {
-    if (this.available === false) {
-      throw new Error('Conversation model unavailable');
-    }
+    const provider = await this._ensureProviderAvailable(this.getProviderForStage('chat'), 'Conversation');
 
     let latestUserMessage = '';
     let systemPrompt = '';
@@ -547,35 +709,26 @@ class LLMService {
     const patientContext = this._buildPatientContext(patient);
     const history = this._formatConversationHistory(conversation);
 
-    const prompt = `You are a healthcare call center agent speaking with a patient on a live phone call.
+    const prompt = `Healthcare assistant on live call. Reply in 1-2 short sentences.
 
-PRIMARY GOALS:
-1. Confirm appointment readiness or identify barriers.
-2. Keep responses short, natural, and empathetic — like a real person, not a robot.
-3. Ask one clear question at a time.
-4. Never provide diagnosis or treatment advice.
-5. If patient has concerns, acknowledge them warmly and offer follow-up.
-6. Never repeat system prompts, campaign instructions, or metadata text.
-7. NEVER repeat something you already said in the conversation.
+TASK: ${this._sanitizeForPrompt(systemPrompt, 800)}
 
-CAMPAIGN INSTRUCTIONS:
-${this._sanitizeForPrompt(systemPrompt, 2200)}
+PATIENT: ${patientContext}
 
-PATIENT PROFILE:
-${patientContext}
-
-RECENT CONVERSATION:
+HISTORY:
 ${history}
 
-LATEST PATIENT MESSAGE:
-${this._sanitizeForPrompt(latestUserMessage, 500)}
+PATIENT SAID: ${this._sanitizeForPrompt(latestUserMessage, 300)}
 
-Reply as the Assistant in 1-2 short spoken sentences. Be warm, conversational, and specific to this patient.`;
+Your reply (1-2 sentences only):`;
 
     const response = await this.generate(prompt, {
-      max_tokens: 140,
-      temperature: 0.65,
-      model: this.chatModel
+      max_tokens: provider === 'ollama' ? 80 : 140,
+      temperature: 0.55,
+      model: this.chatModel,
+      provider,
+      stage: 'chat',
+      num_ctx: provider === 'ollama' ? 1024 : undefined
     });
 
     return this._sanitizeConversationReply(response);
@@ -587,9 +740,7 @@ Reply as the Assistant in 1-2 short spoken sentences. Be warm, conversational, a
    * LLM-based decision for next call action.
    */
   async generateConversationDecision(context = {}) {
-    if (this.available === false) {
-      throw new Error('Decision model unavailable');
-    }
+    const provider = await this._ensureProviderAvailable(this.getProviderForStage('decision'), 'Decision');
 
     const { transcript = '', turnCount = 0, patient = null, config = {}, heuristicAnalysis = {} } = context;
 
@@ -642,7 +793,9 @@ Return JSON:
       temperature: 0.2,
       max_tokens: 280,
       json: true,
-      model: this.decisionModel
+      model: this.decisionModel,
+      provider,
+      stage: 'decision'
     });
 
     const parsed = this._extractJsonObject(response);
@@ -689,6 +842,7 @@ Return JSON:
   // ── Structured Extraction ──────────────────────────────────────────────
 
   async extractStructured(text, schema) {
+    const provider = await this._ensureProviderAvailable(this.getProviderForStage('analysis'), 'Analysis');
     const schemaDesc = JSON.stringify(schema, null, 2);
     const prompt = `You are a healthcare call analysis AI.
 Return ONLY valid JSON following this schema:
@@ -701,7 +855,9 @@ ${text}`;
       temperature: 0.1,
       max_tokens: 260,
       json: true,
-      model: this.analysisModel
+      model: this.analysisModel,
+      provider,
+      stage: 'analysis'
     });
 
     const parsed = this._extractJsonObject(response);
@@ -729,24 +885,29 @@ ${text}`;
    * Full post-call analysis using transcript + patient + campaign context.
    */
   async generatePostCallAnalysis(context = {}) {
-    if (this.available === false) {
-      throw new Error('Analysis model unavailable');
+    const strict = await this.generatePostCallAnalysisStrict(context);
+
+    // Generalize manual follow-up logic consistently across all campaign types
+    let requiresManualFollowup = Boolean(strict.requires_manual_followup);
+    const goalAchievedOrConfirmed = Boolean(strict.appointment_confirmed) || Boolean(strict.campaign_goal_achieved);
+    if (goalAchievedOrConfirmed && strict.risk_level === 'low' && (!strict.risk_flags || strict.risk_flags.length === 0)) {
+      requiresManualFollowup = false;
     }
 
-    const strict = await this.generatePostCallAnalysisStrict(context);
+    const requiresFollowup = Boolean(requiresManualFollowup || strict.risk_level === 'high');
 
     // Backward-compatible projection for existing dashboard/stat routes.
     return {
       summary: strict.summary,
       sentiment: strict.sentiment,
       appointment_confirmed: strict.appointment_confirmed,
-      requested_callback: Boolean(strict.requires_manual_followup),
-      requires_followup: Boolean(strict.requires_manual_followup),
+      requested_callback: requiresManualFollowup,
+      requires_followup: requiresFollowup,
       barrier_type: strict.barrier_type || 'none',
       barrier_notes: Array.isArray(strict.risk_flags) ? strict.risk_flags.join(', ').slice(0, 260) : '',
       priority: strict.priority,
-      followup_recommendation: strict.followup_reason || (strict.requires_manual_followup ? 'Manual follow-up required.' : 'No immediate follow-up required.'),
-      next_best_action: strict.requires_manual_followup
+      followup_recommendation: strict.followup_reason || (requiresManualFollowup ? 'Manual follow-up required.' : 'No immediate follow-up required.'),
+      next_best_action: requiresManualFollowup
         ? 'Route this call to care coordinator follow-up workflow.'
         : 'Document call outcome and proceed per workflow.',
       key_points: Array.isArray(strict.risk_flags) ? strict.risk_flags.slice(0, 6) : [],
@@ -757,18 +918,16 @@ ${text}`;
       confirmed_time: strict.confirmed_time,
       risk_level: strict.risk_level,
       risk_flags: strict.risk_flags,
-      requires_manual_followup: strict.requires_manual_followup,
+      requires_manual_followup: requiresManualFollowup,
       followup_reason: strict.followup_reason,
       action_items: strict.action_items || [],
       urgency: strict.urgency || 'routine',
-      analysis_model_used: this.isGemini ? this.geminiAnalysisModel : this.analysisModel
+      analysis_model_used: this.getAnalysisModelIdentifier()
     };
   }
 
   async generatePostCallAnalysisStrict(context = {}) {
-    if (this.available === false) {
-      throw new Error('Analysis model unavailable');
-    }
+    const provider = await this._ensureProviderAvailable(this.getProviderForStage('analysis'), 'Analysis');
 
     const transcript = this._sanitizeForPrompt(this._sanitizeAnalysisTranscript(context.transcript || ''), 18000);
     const patient = this._buildPatientContext(context.patient || null);
@@ -827,13 +986,14 @@ ${transcript}`;
     return this._generateValidatedJson({
       prompt,
       model: this.analysisModel,
+      provider,
       validator: (parsed) => this._validatePostCallResult(parsed, context.transcript || ''),
       generationOptions: {
         temperature: 0.1,
         top_p: 0.8,
         max_tokens: 900,
         num_ctx: this.analysisNumCtx,
-        stop: ['```', '\nPatient:', '\nAssistant:'],
+        stop: ['\nPatient:', '\nAssistant:'],
         keep_alive: '15m',
         timeout_ms: parseInt(process.env.LLM_ANALYSIS_TIMEOUT_MS, 10) || 180000
       },
@@ -920,55 +1080,75 @@ ${transcript}`;
     const recentTurns = formatTurnsForPrompt(context.recentTurns || []);
     const latestPatientMessage = this._sanitizeForPrompt(context.latestPatientMessage || '', 500);
 
-    return `ROLE: You are a healthcare outreach assistant on a live phone call. You sound like a real, caring hospital staff member — warm, professional, and natural.
+    // Dynamic Emotional/Sentimental Calling Calibration
+    const emotionalState = context.emotionalState || 'neutral';
+    let emotionalGuideline = '';
+    switch (emotionalState) {
+      case 'frustrated':
+        emotionalGuideline = 'PATIENT EMOTION: FRUSTRATED. Speak in a highly calming, gentle, and reassuring tone. Apologize for any frustration. Prioritize de-escalation over campaign rules. Never sound defensive.';
+        break;
+      case 'confused':
+        emotionalGuideline = 'PATIENT EMOTION: CONFUSED. Slow down and simplify. Explain details clearly in layman terms. Acknowledge and validate their confusion, offering reassurance.';
+        break;
+      case 'concerned':
+        emotionalGuideline = 'PATIENT EMOTION: CONCERNED/ANXIOUS. Speak with deep clinical empathy and warmth. Acknowledge their concern immediately and validate their feelings. Reassure them that the hospital is here to help.';
+        break;
+      case 'cooperative':
+        emotionalGuideline = 'PATIENT EMOTION: COOPERATIVE. Keep the call moving efficiently, maintaining a pleasant, warm, and highly professional conversational pace.';
+        break;
+      default:
+        emotionalGuideline = 'PATIENT EMOTION: NEUTRAL. Speak like a warm, caring, clear, and professional hospital representative.';
+    }
 
-YOUR PRIMARY TASK (follow this strictly):
-${campaignObjective}
+    // Dynamic Confirmed Facts Injection (preventing repetitiveness)
+    const confirmedFacts = context.confirmedFacts || {};
+    let factsGuideline = 'CONFIRMED FACTS SO FAR:\n';
+    if (confirmedFacts.appointmentConfirmed) factsGuideline += '- Patient has confirmed the appointment.\n';
+    if (confirmedFacts.callbackRequested) factsGuideline += '- Patient requested a callback.\n';
+    if (Array.isArray(confirmedFacts.barriersIdentified) && confirmedFacts.barriersIdentified.length > 0) {
+      factsGuideline += `- Identified barriers: ${confirmedFacts.barriersIdentified.join(', ')}\n`;
+    }
+    if (Array.isArray(confirmedFacts.patientConcerns) && confirmedFacts.patientConcerns.length > 0) {
+      factsGuideline += `- Known concerns: ${confirmedFacts.patientConcerns.join(', ')}\n`;
+    }
+    if (factsGuideline === 'CONFIRMED FACTS SO FAR:\n') {
+      factsGuideline = '';
+    }
 
-CAMPAIGN-SPECIFIC GUIDELINES:
+    return `You are a healthcare assistant on a live phone call. Be warm, empathetic, and professional.
+
+TASK: ${campaignObjective}
+
+RULES:
 ${campaignRules}
 
-YOUR REPLY MUST directly advance this task. Do NOT introduce unrelated topics, do NOT suggest follow-ups unless the patient raises concerns, and do NOT repeat what you already said in earlier turns.
+PATIENT: ${patientName}, age ${age}, ${this._sanitizeForPrompt(conditionGroup, 80)}
+Appointment: ${this._sanitizeForPrompt(appointmentType, 80)} on ${this._sanitizeForPrompt(appointmentDate, 40)}${doctorName ? ` with ${this._sanitizeForPrompt(doctorName, 60)}` : ''}
 
-PATIENT DETAILS:
-- Name: ${patientName}
-- Age: ${age}
-- Condition: ${this._sanitizeForPrompt(conditionGroup, 120)}
-- Appointment: ${this._sanitizeForPrompt(appointmentType, 120)} on ${this._sanitizeForPrompt(appointmentDate, 60)}${doctorName ? ` with ${this._sanitizeForPrompt(doctorName, 100)}` : ''}
+${emotionalGuideline}
 
-CONVERSATION RULES:
-1. Keep reply to 1-2 SHORT spoken sentences only
-2. If patient confirms the appointment, thank them briefly and set action to "end_call". Do NOT keep talking after they confirm
-3. If patient says goodbye, bye, I have to go, hang up, talk later, or any farewell — respond with a brief polite closing and set action to "end_call" immediately
-4. NEVER repeat a sentence you already said. Check the conversation history and say something different each time
-5. If the patient's message is unclear, ask a SPECIFIC clarifying question related to the task instead of saying "I didn't catch that"
-6. If patient has questions or concerns, address them directly and empathetically
-7. Never provide medical diagnosis or treatment advice
-8. Be polite, warm, and natural — speak like a real person calling from the hospital
-9. Use the patient's name naturally (not every sentence)
-10. Return ONLY valid JSON
+${factsGuideline}
+GUIDELINES:
+- Reply in 1-2 short spoken sentences only (sound natural, not scripted)
+- If patient confirms, say thanks and set action to "end_call"
+- If patient says goodbye/bye/hang up, set action to "end_call" immediately
+- Never repeat yourself — check HISTORY before responding
+- Never provide medical diagnosis or treatment advice
+- Never mention you are an AI, a model, or a language model
+- Never output anything except the JSON object
 
-${conversationSummary ? `CONVERSATION SUMMARY:\n${conversationSummary}\n` : ''}
-RECENT CONVERSATION:
+${conversationSummary ? `SUMMARY: ${conversationSummary}\n` : ''}
+HISTORY:
 ${recentTurns}
 
-LATEST PATIENT MESSAGE:
-${latestPatientMessage}
+PATIENT: ${latestPatientMessage}
 
-Return ONLY JSON:
-{
-  "reply": "your spoken response",
-  "action": "continue | end_call | transfer_human",
-  "goal_status": "pending | achieved | failed",
-  "risk_detected": false,
-  "confidence": 0.0
-}`;
+You MUST return ONLY a valid JSON object. No markdown, no explanation, no code fences:
+{"reply":"<your 1-2 sentence spoken response>","action":"continue","goal_status":"pending","risk_detected":false,"confidence":0.85}`;
   }
 
   async generateRealtimeTurn(context = {}) {
-    if (this.available === false) {
-      throw new Error('Realtime model unavailable');
-    }
+    const provider = await this._ensureProviderAvailable(this.getProviderForStage('realtime'), 'Realtime');
 
     const prompt = this._buildCampaignRealtimePrompt(context);
     const schemaHelp = `"reply" (string), "action" (continue|end_call|transfer_human), "goal_status" (pending|achieved|failed), "risk_detected" (boolean), "confidence" (0..1)`;
@@ -976,15 +1156,16 @@ Return ONLY JSON:
     const result = await this._generateValidatedJson({
       prompt,
       model: this.chatModel,
+      provider,
       validator: validateRealtimeTurn,
       generationOptions: {
         temperature: 0.3,
         top_p: 0.85,
-        max_tokens: 200,
-        num_ctx: parseInt(process.env.LLM_NUM_CTX_REALTIME, 10) || 1536,
-        stop: ['```', '\nPatient:', '\nAssistant:'],
+        max_tokens: provider === 'ollama' ? 200 : 400,
+        num_ctx: provider === 'ollama' ? 1024 : (parseInt(process.env.LLM_NUM_CTX_REALTIME, 10) || 1536),
+        stop: ['\nPatient:', '\nAssistant:'],
         keep_alive: '30m',
-        timeout_ms: parseInt(process.env.LLM_REALTIME_TIMEOUT_MS, 10) || 60000
+        timeout_ms: provider === 'ollama' ? 30000 : (parseInt(process.env.LLM_REALTIME_TIMEOUT_MS, 10) || 60000)
       },
       schemaHelp
     });
@@ -997,6 +1178,7 @@ Return ONLY JSON:
   // ── Sentiment Classification ───────────────────────────────────────────
 
   async classifySentiment(text) {
+    const provider = await this._ensureProviderAvailable(this.getProviderForStage('analysis'), 'Analysis');
     const prompt = `You are a sentiment analysis AI for healthcare calls.
 Respond with exactly one word: positive, neutral, or negative.
 
@@ -1006,7 +1188,9 @@ ${text}`;
     const response = await this.generate(prompt, {
       temperature: 0.1,
       max_tokens: 10,
-      model: this.analysisModel
+      model: this.analysisModel,
+      provider,
+      stage: 'analysis'
     });
 
     const sentiment = response.toLowerCase().trim().replace(/[^a-z]/g, '');
@@ -1018,7 +1202,7 @@ ${text}`;
 
   // ── Validated JSON Generation ──────────────────────────────────────────
 
-  async _generateValidatedJson({ prompt, model, validator, generationOptions = {}, schemaHelp = '' }) {
+  async _generateValidatedJson({ prompt, model, provider, validator, generationOptions = {}, schemaHelp = '' }) {
     let activePrompt = String(prompt || '').trim();
     let lastError = null;
     let lastRaw = '';
@@ -1026,6 +1210,7 @@ ${text}`;
     for (let attempt = 0; attempt < 2; attempt++) {
       const raw = await this.generate(activePrompt, {
         model,
+        provider,
         json: true,
         ...generationOptions
       });
@@ -1049,13 +1234,16 @@ ${text}`;
 
   async _generateAnalysisJson(prompt, repairKeyList) {
     const modelName = this.analysisModel;
+    const provider = await this._ensureProviderAvailable(this.getProviderForStage('analysis'), 'Analysis');
     const response = await this.generate(prompt, {
       temperature: 0.1,
       max_tokens: this.analysisMaxTokens,
       timeout_ms: 180000,
       json: true,
       model: modelName,
-      num_ctx: this.analysisNumCtx
+      num_ctx: this.analysisNumCtx,
+      provider,
+      stage: 'analysis'
     });
 
     try {
@@ -1077,7 +1265,9 @@ ${this._sanitizeForPrompt(response, 7000)}`;
         timeout_ms: 120000,
         json: true,
         model: modelName,
-        num_ctx: this.analysisNumCtx
+        num_ctx: this.analysisNumCtx,
+        provider,
+        stage: 'analysis'
       });
       const parsed = this._extractJsonObject(repaired);
       return { parsed, modelName };
@@ -1118,28 +1308,38 @@ ${this._sanitizeForPrompt(response, 7000)}`;
   // ── Model Runtime Management (Ollama-only) ─────────────────────────────
 
   async acquireRealtimeSession() {
-    if (this.isGemini) {
-      // No model swapping needed with Gemini API
+    if (this.getProviderForStage('realtime') !== 'ollama') {
       return async () => { };
     }
     return this.runtimeManager.acquireRealtimeSession();
   }
 
   async ensureAnalysisModel(options = {}) {
-    if (this.isGemini) return;
+    if (this.getProviderForStage('analysis') !== 'ollama') return;
     return this.runtimeManager.ensureAnalysisModel(options);
   }
 
   async releaseAnalysisModel() {
-    if (this.isGemini) return;
+    if (this.getProviderForStage('analysis') !== 'ollama') return;
     return this.runtimeManager.releaseAnalysisModel();
   }
 
   getRuntimeState() {
-    if (this.isGemini) {
-      return { stage: 'gemini', activeRealtimeSessions: 0, realtimeModel: this.geminiChatModel, analysisModel: this.geminiAnalysisModel };
-    }
-    return this.runtimeManager.getState();
+    const providers = this._configuredStageProviders();
+    const runtimeState = this.usesProvider('ollama')
+      ? this.runtimeManager.getState()
+      : {
+          stage: 'gemini',
+          activeRealtimeSessions: 0,
+          realtimeModel: this.geminiChatModel,
+          analysisModel: this.geminiAnalysisModel
+        };
+
+    return {
+      ...runtimeState,
+      providers,
+      analysisModelIdentifier: this.getAnalysisModelIdentifier()
+    };
   }
 }
 

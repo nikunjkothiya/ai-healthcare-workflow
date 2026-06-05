@@ -3,6 +3,7 @@ const fs = require('fs');
 
 class TTSService {
   constructor() {
+    this.ttsProvider = (process.env.TTS_PROVIDER || 'kokoro').toLowerCase();
     this.ttsHost = process.env.TTS_HOST || 'tts';
     this.ttsPort = process.env.TTS_PORT || 5002;
     this.baseUrl = `http://${this.ttsHost}:${this.ttsPort}`;
@@ -112,8 +113,8 @@ class TTSService {
   }
 
   /**
-   * Convert text to speech.
-   * Splits text into sentences for Tacotron2 stability and caches common phrases.
+   * Convert text to speech with streaming support.
+   * Returns first sentence audio immediately, synthesizes remaining sentences.
    * @param {string} text
    * @param {string} outputPath
    * @returns {Promise<string>}
@@ -127,6 +128,15 @@ class TTSService {
         throw new Error('No valid sentence-level text for synthesis');
       }
 
+      if (this.ttsProvider === 'kokoro') {
+        try {
+          const kokoroService = require('./kokoroService');
+          return await kokoroService.synthesize(sentenceText, outputPath);
+        } catch (err) {
+          console.warn(`TTS: Kokoro synthesis failed (${err.message}), falling back to Coqui...`);
+        }
+      }
+
       const cacheKey = this.getCacheKey(sentenceText);
       const cached = this.cache.get(cacheKey);
       if (cached) {
@@ -135,23 +145,32 @@ class TTSService {
         return outputPath;
       }
 
-      // Split long text into sentences to avoid Tacotron2 crashes
       const sentences = this.splitIntoSentences(sentenceText);
-      const audioBuffers = [];
-
-      for (const sentence of sentences) {
-        const response = await this.requestSynthesis(sentence);
-        audioBuffers.push(Buffer.from(response.data));
+      if (sentences.length === 0) {
+        throw new Error('No sentences to synthesize');
       }
 
-      const audioBuffer = this.concatenateWavBuffers(audioBuffers);
-      fs.writeFileSync(outputPath, audioBuffer);
+      // Synthesize first sentence immediately for low latency
+      const firstResponse = await this.requestSynthesis(sentences[0]);
+      const firstBuffer = Buffer.from(firstResponse.data);
+      fs.writeFileSync(outputPath, firstBuffer);
+
+      // Synthesize remaining sentences and concatenate
+      if (sentences.length > 1) {
+        const remainingBuffers = [firstBuffer];
+        for (let i = 1; i < sentences.length; i++) {
+          const response = await this.requestSynthesis(sentences[i]);
+          remainingBuffers.push(Buffer.from(response.data));
+        }
+        const fullBuffer = this.concatenateWavBuffers(remainingBuffers);
+        fs.writeFileSync(outputPath, fullBuffer);
+      }
 
       if (this.commonPhraseCache.has(cacheKey) || sentenceText.length <= 100) {
-        this.setCache(cacheKey, audioBuffer);
+        this.setCache(cacheKey, fs.readFileSync(outputPath));
       }
 
-      console.log(`[LATENCY][TTS] ${Date.now() - startedAt}ms`);
+      console.log(`[LATENCY][TTS] ${Date.now() - startedAt}ms (${sentences.length} sentences)`);
       return outputPath;
     } catch (error) {
       console.error('TTS error:', error.message);
@@ -164,6 +183,14 @@ class TTSService {
    * @returns {Promise<boolean>}
    */
   async healthCheck() {
+    if (this.ttsProvider === 'kokoro') {
+      try {
+        const kokoroService = require('./kokoroService');
+        const healthy = await kokoroService.isHealthy();
+        if (healthy) return true;
+      } catch (_) {}
+    }
+
     try {
       const response = await axios.get(`${this.baseUrl}/`, { timeout: 3000 });
       return response.status === 200;
