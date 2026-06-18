@@ -2,7 +2,7 @@
   <div class="product-admin">
     <div class="page-header">
       <h1>🏢 Product Admin Dashboard</h1>
-      <p class="subtitle">Manage hospitals, monitor system activity, and configure orchestration</p>
+      <p class="subtitle">Manage hospitals, monitor activity, and configure calling controls.</p>
     </div>
 
     <div class="tabs">
@@ -50,7 +50,7 @@
           </div>
           <div class="hospital-stats">
             <div class="stat">
-              <span class="label">Campaigns:</span>
+              <span class="label">Outreach:</span>
               <span class="value">{{ org.campaign_count }}</span>
             </div>
             <div class="stat">
@@ -83,7 +83,7 @@
         <div class="activity-card">
           <h3>Queue Size</h3>
           <div class="activity-value">{{ realtimeStats.queueSize || 0 }}</div>
-          <div class="activity-label">Pending calls</div>
+          <div class="activity-label">Calls waiting</div>
         </div>
         <div class="activity-card">
           <h3>Completed Today</h3>
@@ -192,7 +192,7 @@
           <div class="stat-card">
             <div class="stat-icon">📋</div>
             <div class="stat-value">{{ analytics.totalStats?.total_campaigns || 0 }}</div>
-            <div class="stat-label">Total Campaigns</div>
+            <div class="stat-label">Outreach Programs</div>
           </div>
           <div class="stat-card">
             <div class="stat-icon">📞</div>
@@ -274,7 +274,7 @@
             <span class="value">{{ hospitalDetails.stats.total_patients }}</span>
           </div>
           <div class="detail-item">
-            <span class="label">Campaigns</span>
+            <span class="label">Outreach</span>
             <span class="value">{{ hospitalDetails.stats.total_campaigns }}</span>
           </div>
           <div class="detail-item">
@@ -296,27 +296,27 @@
           <div v-if="hospitalDetails.patientStatuses.length === 0" class="empty-text">No patients yet</div>
           <div v-else class="chip-list">
             <span v-for="item in hospitalDetails.patientStatuses" :key="item.status" class="chip">
-              {{ item.status }}: {{ item.count }}
+              {{ formatPatientStatus(item.status) }}: {{ item.count }}
             </span>
           </div>
         </div>
 
         <div class="details-section">
-          <h3>Call States</h3>
+          <h3>Call Outcomes</h3>
           <div v-if="hospitalDetails.callStates.length === 0" class="empty-text">No calls yet</div>
           <div v-else class="chip-list">
             <span v-for="item in hospitalDetails.callStates" :key="item.state" class="chip">
-              {{ item.state }}: {{ item.count }}
+              {{ formatCallState(item.state) }}: {{ item.count }}
             </span>
           </div>
         </div>
 
         <div class="details-section">
-          <h3>Recent Campaigns</h3>
-          <div v-if="hospitalDetails.recentCampaigns.length === 0" class="empty-text">No campaigns yet</div>
+          <h3>Recent Outreach</h3>
+          <div v-if="hospitalDetails.recentCampaigns.length === 0" class="empty-text">No outreach yet</div>
           <ul v-else class="details-list">
             <li v-for="campaign in hospitalDetails.recentCampaigns" :key="campaign.id">
-              {{ campaign.name }} ({{ campaign.status }})
+              {{ campaign.name }} ({{ formatCampaignStatus(campaign.status) }})
             </li>
           </ul>
         </div>
@@ -326,7 +326,7 @@
           <div v-if="hospitalDetails.recentPatients.length === 0" class="empty-text">No patients yet</div>
           <ul v-else class="details-list">
             <li v-for="patient in hospitalDetails.recentPatients" :key="patient.id">
-              {{ patient.name }} ({{ patient.status }})
+              {{ patient.name }} ({{ formatPatientStatus(patient.status) }})
             </li>
           </ul>
         </div>
@@ -336,7 +336,7 @@
           <div v-if="hospitalDetails.recentCalls.length === 0" class="empty-text">No calls yet</div>
           <ul v-else class="details-list">
             <li v-for="call in hospitalDetails.recentCalls" :key="call.id">
-              #{{ call.id }} - {{ call.state }} - {{ call.patient_name || 'Unknown patient' }}
+              #{{ call.id }} - {{ formatCallState(call.state) }} - {{ call.patient_name || 'Unknown patient' }}
             </li>
           </ul>
         </div>
@@ -351,6 +351,7 @@
 
 <script>
 import api from '../api.js';
+import { formatCallState, formatCampaignStatus, formatPatientStatus } from '../displayLabels.js';
 
 export default {
   name: 'ProductAdmin',
@@ -392,6 +393,9 @@ export default {
     }
   },
   methods: {
+    formatCallState,
+    formatCampaignStatus,
+    formatPatientStatus,
     async loadOrganizations() {
       this.loading = true;
       try {
@@ -461,7 +465,7 @@ export default {
     },
     async confirmDeleteHospital(org) {
       const confirmed = window.confirm(
-        `Delete "${org.name}" and all hospital data (users, patients, campaigns, calls, events)? This cannot be undone.`
+        `Delete "${org.name}" and all hospital data (users, patients, outreach programs, calls, events)? This cannot be undone.`
       );
       if (!confirmed) return;
 

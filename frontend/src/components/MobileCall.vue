@@ -71,7 +71,7 @@
           :key="index" 
           :class="['message-bubble', msg.role]"
         >
-          <div class="speaker">{{ msg.role === 'assistant' ? '🤖 AI Agent' : '👤 You' }}</div>
+          <div class="speaker">{{ msg.role === 'assistant' ? 'Care Assistant' : 'You' }}</div>
           <div class="text">{{ msg.text }}</div>
           <div class="timestamp">{{ msg.timestamp }}</div>
         </div>
@@ -103,19 +103,19 @@
       <p class="ended-message">{{ statusMessage }}</p>
 
       <div class="ended-info" v-if="linkStatus?.latestCall">
-        <p><strong>Call ID:</strong> #{{ linkStatus.latestCall.id }}</p>
-        <p><strong>Call State:</strong> {{ linkStatus.latestCall.state }}</p>
+        <p><strong>Reference:</strong> #{{ linkStatus.latestCall.id }}</p>
+        <p><strong>Status:</strong> {{ formatCallState(linkStatus.latestCall.state) }}</p>
         <p><strong>Updated:</strong> {{ formatDateTime(linkStatus.latestCall.updated_at || linkStatus.latestCall.created_at) }}</p>
       </div>
     </div>
 
     <div v-if="callState === 'invalid'" class="call-status-screen">
       <div class="ended-icon invalid">!</div>
-      <h2>Incorrect Call URL</h2>
+      <h2>Invalid Call Link</h2>
       <p class="ended-message">{{ invalidMessage }}</p>
 
       <div class="ended-info">
-        <p>Please check the patient/campaign link and try again.</p>
+        <p>Please check the patient call link and try again.</p>
       </div>
     </div>
 
@@ -139,6 +139,8 @@
 </template>
 
 <script>
+import { formatCallState } from '../displayLabels.js';
+
 export default {
   name: 'MobileCall',
   data() {
@@ -160,7 +162,7 @@ export default {
       ringtoneInterval: null,
       isSocketConnected: false,
       incomingReady: false,
-      incomingStatusText: 'Waiting for scheduled AI call...',
+      incomingStatusText: 'Waiting for the scheduled call...',
       ringSecondsLeft: null,
       ringCountdownInterval: null,
       turnState: 'assistant', // assistant | patient
@@ -196,7 +198,7 @@ export default {
     }
 
     if (urlParams.has('campaign') && !parsedCampaignId) {
-      this.setInvalidCallUrl('Invalid campaign ID in the call link.');
+      this.setInvalidCallUrl('Invalid outreach ID in the call link.');
       return;
     }
 
@@ -234,6 +236,7 @@ export default {
     this.stopRecording();
   },
   methods: {
+    formatCallState,
     cleanDisplayText(value) {
       return String(value || '')
         .replace(/\[(?:BLANK_AUDIO|SILENCE|NO_SPEECH|MUSIC)\]|\((?:SILENCE|NOISE|MUSIC)\)|<\|(?:nospeech|silence)\|>/gi, ' ')
@@ -269,7 +272,7 @@ export default {
     },
     applyStatusScreen(callLink) {
       const displayState = callLink?.displayState || 'not_scheduled';
-      const message = callLink?.message || 'No pending call is scheduled for this link.';
+      const message = callLink?.message || 'No active call is scheduled for this link.';
 
       const statusConfig = {
         completed: { title: 'Call Completed', variant: 'success', icon: '✓' },
@@ -328,7 +331,7 @@ export default {
         if ((this.linkStatus?.displayState || 'not_scheduled') === 'pending') {
           this.callState = 'incoming';
           this.incomingReady = false;
-          this.incomingStatusText = this.linkStatus?.message || 'Waiting for scheduled AI call...';
+          this.incomingStatusText = this.linkStatus?.message || 'Waiting for the scheduled call...';
           return true;
         }
 
@@ -409,7 +412,7 @@ export default {
           this.incomingReady = true;
           this.callState = 'incoming';
           this.turnState = 'assistant';
-          this.incomingStatusText = 'Incoming AI call. Accept to talk now.';
+          this.incomingStatusText = 'Incoming call. Accept to talk now.';
           this.startRingCountdown(data.timeoutMs || 30000);
           this.playRingtone();
         }
@@ -682,9 +685,9 @@ export default {
         const vadConfig = {
           speechThreshold: this.readEnvNumber('VITE_VAD_SPEECH_THRESHOLD', 0.007),
           silenceThreshold: this.readEnvNumber('VITE_VAD_SILENCE_THRESHOLD', 0.0035),
-          minSpeechMs: this.readEnvNumber('VITE_VAD_MIN_SPEECH_MS', 450),
-          endSilenceMs: this.readEnvNumber('VITE_VAD_END_SILENCE_MS', 1000),
-          maxUtteranceMs: this.readEnvNumber('VITE_VAD_MAX_UTTERANCE_MS', 12000)
+          minSpeechMs: this.readEnvNumber('VITE_VAD_MIN_SPEECH_MS', 300),
+          endSilenceMs: this.readEnvNumber('VITE_VAD_END_SILENCE_MS', 650),
+          maxUtteranceMs: this.readEnvNumber('VITE_VAD_MAX_UTTERANCE_MS', 8000)
         };
 
         const state = {
@@ -866,7 +869,7 @@ export default {
       this.callDuration = 0;
       this.conversation = [];
       this.incomingReady = false;
-      this.incomingStatusText = 'Waiting for scheduled AI call...';
+      this.incomingStatusText = 'Waiting for the scheduled call...';
       this.turnState = 'assistant';
       this.assistantSpeaking = false;
       this.loadCallLinkContext().then((isPending) => {

@@ -1,6 +1,4 @@
 const axios = require('axios');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const ModelRuntimeManager = require('./modelRuntimeManager');
 const {
   extractJsonObject,
   validateRealtimeTurn,
@@ -74,41 +72,36 @@ const CAMPAIGN_PROMPTS = {
 
 class LLMService {
   constructor() {
-    this.provider = this._normalizeProviderName(process.env.LLM_PROVIDER || 'gemini');
-    this.ollamaUrl = process.env.OLLAMA_URL || 'http://ollama:11434';
-    this.chatProvider = this._resolveStageProvider(process.env.LLM_CHAT_PROVIDER, this.provider);
-    this.realtimeProvider = this._resolveStageProvider(process.env.LLM_REALTIME_PROVIDER, this.chatProvider);
-    this.decisionProvider = this._resolveStageProvider(process.env.LLM_DECISION_PROVIDER, this.chatProvider);
-    this.analysisProvider = this._resolveStageProvider(process.env.LLM_ANALYSIS_PROVIDER, this.provider);
+    this.provider = 'openrouter';
+    this.chatProvider = 'openrouter';
+    this.realtimeProvider = 'openrouter';
+    this.decisionProvider = 'openrouter';
+    this.analysisProvider = 'openrouter';
 
-    // Gemini configuration
-    this.geminiApiKey = process.env.GEMINI_API_KEY || '';
-    this.geminiChatModel = process.env.GEMINI_MODEL_CHAT || 'gemini-2.0-flash';
-    this.geminiAnalysisModel = process.env.GEMINI_MODEL_ANALYSIS || 'gemini-2.0-flash';
-    this.geminiDecisionModel = process.env.GEMINI_MODEL_DECISION || 'gemini-2.0-flash';
-    this.geminiClient = null;
+    // OpenRouter-only configuration. Use openrouter/free by default so a
+    // no-billing OpenRouter key can route to available free model variants.
+    this.openRouterApiKey = process.env.OPENROUTER_API_KEY || '';
+    this.openRouterUrl = process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1';
+    this.openRouterHttpReferer = process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000';
+    this.openRouterAppTitle = process.env.OPENROUTER_APP_TITLE || 'Care Outreach Assistant';
+    this.openRouterModel = process.env.OPENROUTER_MODEL || 'openrouter/free';
+    this.openRouterChatModel = process.env.OPENROUTER_MODEL_CHAT || this.openRouterModel;
+    this.openRouterRealtimeModel = process.env.OPENROUTER_MODEL_REALTIME || this.openRouterChatModel;
+    this.openRouterDecisionModel = process.env.OPENROUTER_MODEL_DECISION || this.openRouterChatModel;
+    this.openRouterAnalysisModel = process.env.OPENROUTER_MODEL_ANALYSIS || this.openRouterModel;
 
-    if (this.geminiApiKey && this.geminiApiKey !== 'YOUR_GEMINI_API_KEY_HERE') {
-      this.geminiClient = new GoogleGenerativeAI(this.geminiApiKey);
-    }
-
-    // Ollama model tags — stage-specific with env override
-    // Recommended defaults (all run on 8-16GB RAM):
-    //   Chat:     llama3.2:3b  — best structured JSON output (critical for live calls)
-    //   Decision: llama3.2:3b  — same model, different prompt
-    //   Analysis: qwen3:8b      — deeper reasoning for post-call
-    // Alternatives: qwen3:4b (fast dual-mode), phi:3.8b (best reasoning), gemma3:4b (multilingual)
-    this.chatModel = process.env.OLLAMA_MODEL_CHAT || 'llama3.2:3b';
-    this.decisionModel = process.env.OLLAMA_MODEL_DECISION || 'llama3.2:3b';
-    this.analysisModel = process.env.OLLAMA_MODEL_ANALYSIS || 'qwen3:8b';
+    this.maxTokens = parseInt(process.env.LLM_MAX_TOKENS, 10) || 150;
+    this.numCtx = parseInt(process.env.LLM_NUM_CTX, 10) || 1024;
+    this.timeoutMs = parseInt(process.env.LLM_TIMEOUT_MS, 10) || 15000;
     this.analysisNumCtx = parseInt(process.env.LLM_NUM_CTX_ANALYSIS, 10) || 4096;
     this.analysisMaxTokens = parseInt(process.env.LLM_MAX_TOKENS_ANALYSIS, 10) || 768;
-    this.maxRetries = 2;
-    this.retryDelayMs = 1500;
+    const configuredMaxRetries = parseInt(process.env.LLM_MAX_RETRIES, 10);
+    const configuredRetryDelayMs = parseInt(process.env.LLM_RETRY_DELAY_MS, 10);
+    this.maxRetries = Number.isFinite(configuredMaxRetries) ? Math.max(0, configuredMaxRetries) : 1;
+    this.retryDelayMs = Number.isFinite(configuredRetryDelayMs) ? Math.max(0, configuredRetryDelayMs) : 800;
     this.available = null;
     this.providerAvailability = {
-      gemini: null,
-      ollama: null
+      openrouter: null
     };
 
     // Model-specific parameter overrides based on model family
@@ -121,28 +114,16 @@ class LLMService {
       'default':  { temperature: 0.3, top_p: 0.85, repeat_penalty: 1.05 }
     };
 
-    // Model runtime manager for Ollama mode only
-    this.runtimeManager = new ModelRuntimeManager({
-      ollamaUrl: this.ollamaUrl,
-      realtimeModel: this.chatModel,
-      analysisModel: this.analysisModel,
-      maxRamGb: parseFloat(process.env.MAX_RUNTIME_RAM_GB || '14')
-    });
-
     this.configErrors = this._validateModelConfig();
     this.configError = this.configErrors[0] || null;
   }
 
-  _normalizeProviderName(provider, fallback = 'gemini') {
-    const normalized = String(provider || '').trim().toLowerCase();
-    if (normalized === 'gemini' || normalized === 'ollama') {
-      return normalized;
-    }
-    return fallback;
+  _normalizeProviderName() {
+    return 'openrouter';
   }
 
-  _resolveStageProvider(provider, fallback) {
-    return this._normalizeProviderName(provider || fallback, fallback || 'gemini');
+  _resolveStageProvider() {
+    return 'openrouter';
   }
 
   _configuredStageProviders() {
@@ -168,110 +149,44 @@ class LLMService {
   _validateModelConfig() {
     const errors = [];
 
-    if (this.usesProvider('gemini')) {
-      if (!this.geminiApiKey || this.geminiApiKey === 'YOUR_GEMINI_API_KEY_HERE') {
-        errors.push('GEMINI_API_KEY not set. Set stage providers to ollama if you want a fully local workflow.');
-      }
-    }
-
-    if (this.usesProvider('ollama') && (!this.model || !this.chatModel || !this.analysisModel || !this.decisionModel)) {
-      errors.push('Internal Ollama model tags are not configured.');
+    if (!this.openRouterApiKey || this.openRouterApiKey === 'YOUR_OPENROUTER_API_KEY_HERE') {
+      errors.push('OPENROUTER_API_KEY not set. Add your OpenRouter key to .env.');
     }
 
     return errors;
   }
 
-  // ── Provider Detection ─────────────────────────────────────────────────
-
-  get isGemini() {
-    return this.provider === 'gemini' && this.geminiClient !== null;
-  }
-
-  get usesGeminiForAnalysis() {
-    return this.analysisProvider === 'gemini' && this.geminiClient !== null;
-  }
-
   getAnalysisModelIdentifier() {
-    return this.usesGeminiForAnalysis
-      ? (this.geminiAnalysisModel || 'gemini-2.5-flash')
-      : (this.analysisModel || 'healthcare-analysis');
+    return this.openRouterAnalysisModel || this.openRouterModel || 'openrouter/free';
   }
 
   // ── Availability Check ─────────────────────────────────────────────────
 
-  async _checkGeminiAvailability() {
-    if (!this.geminiClient) {
-      console.error('LLM: Gemini API key is missing or invalid for a stage that requires Gemini.');
-      this.providerAvailability.gemini = false;
+  async _checkOpenRouterAvailability() {
+    if (!this.openRouterApiKey || this.openRouterApiKey === 'YOUR_OPENROUTER_API_KEY_HERE') {
+      console.error('LLM: OpenRouter API key is missing for a stage that requires OpenRouter.');
+      this.providerAvailability.openrouter = false;
       return false;
     }
 
-    try {
-      const model = this.geminiClient.getGenerativeModel({ model: this.geminiChatModel });
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: 'Reply with just "ok"' }] }],
-        generationConfig: { maxOutputTokens: 5 }
-      });
-      const text = result.response?.text?.() || '';
-      if (!String(text || '').trim()) {
-        throw new Error('Empty response from Gemini availability probe');
-      }
-
-      console.log(`LLM: Connected to Gemini API (chat=${this.geminiChatModel}, analysis=${this.geminiAnalysisModel}, decision=${this.geminiDecisionModel})`);
-      this.providerAvailability.gemini = true;
-      return true;
-    } catch (error) {
-      console.error(`LLM: Gemini API not available: ${error.message}`);
-      this.providerAvailability.gemini = false;
-      return false;
-    }
-  }
-
-  async _checkOllamaAvailability() {
-    try {
-      const response = await axios.get(`${this.ollamaUrl}/api/tags`, { timeout: 5000 });
-      const models = response.data.models || [];
-      const availableModelNames = [...new Set(
-        models
-          .flatMap((m) => [m?.name, m?.model])
-          .map((name) => this._normalizeModelName(name))
-          .filter(Boolean)
-      )];
-      const requiredModels = this._requiredModels();
-
-      const missingModels = [];
-      for (const requiredModel of requiredModels) {
-        const hasModel = availableModelNames.some((name) => this._modelNameMatches(requiredModel, name));
-        if (!hasModel) {
-          missingModels.push(requiredModel);
-        }
-      }
-
-      const available = missingModels.length === 0;
-      this.providerAvailability.ollama = available;
-      if (!available) {
-        console.error(`LLM: Missing required Ollama model(s): ${missingModels.join(', ')}`);
-      } else {
-        console.log(`LLM: Connected to Ollama (models: ${availableModelNames.join(', ')})`);
-      }
-      return available;
-    } catch (error) {
-      console.error(`LLM: Ollama not reachable at ${this.ollamaUrl}: ${error.message}`);
-      this.providerAvailability.ollama = false;
-      return false;
-    }
+    // Avoid spending scarce free-model quota on startup probes. Actual request
+    // failures are still surfaced by generate(), and callers keep their existing
+    // safe response behavior.
+    console.log(
+      `LLM: OpenRouter configured (chat=${this.openRouterChatModel}, realtime=${this.openRouterRealtimeModel}, decision=${this.openRouterDecisionModel}, analysis=${this.openRouterAnalysisModel})`
+    );
+    this.providerAvailability.openrouter = true;
+    return true;
   }
 
   async _ensureProviderAvailable(provider, label = 'LLM') {
-    const normalized = this._normalizeProviderName(provider, this.provider);
-    const known = this.providerAvailability[normalized];
+    const normalized = 'openrouter';
+    const known = this.providerAvailability.openrouter;
     if (known === true) {
       return normalized;
     }
 
-    const ok = normalized === 'gemini'
-      ? await this._checkGeminiAvailability()
-      : await this._checkOllamaAvailability();
+    const ok = await this._checkOpenRouterAvailability();
 
     if (!ok) {
       throw new Error(`${label} provider unavailable (${normalized})`);
@@ -288,18 +203,7 @@ class LLMService {
       return false;
     }
 
-    let geminiOk = true;
-    let ollamaOk = true;
-
-    if (this.usesProvider('gemini')) {
-      geminiOk = await this._checkGeminiAvailability();
-    }
-
-    if (this.usesProvider('ollama')) {
-      ollamaOk = await this._checkOllamaAvailability();
-    }
-
-    this.available = geminiOk && ollamaOk;
+    this.available = await this._checkOpenRouterAvailability();
     if (this.available) {
       console.log(
         `LLM routing: chat=${this.chatProvider}, realtime=${this.realtimeProvider}, decision=${this.decisionProvider}, analysis=${this.analysisProvider}`
@@ -528,8 +432,7 @@ class LLMService {
   // ── Core Generation Methods ────────────────────────────────────────────
 
   /**
-   * Generate text from LLM with retries.
-   * Routes to Gemini API or Ollama based on stage-specific provider settings.
+   * Generate text from OpenRouter with retries.
    */
   _getModelConfig(modelName) {
     const key = Object.keys(this._modelConfigs).find(k => 
@@ -538,135 +441,109 @@ class LLMService {
     return this._modelConfigs[key || 'default'];
   }
 
+  _getOpenRouterModelForStage(stage = 'chat') {
+    switch (stage) {
+      case 'realtime':
+        return this.openRouterRealtimeModel;
+      case 'decision':
+        return this.openRouterDecisionModel;
+      case 'analysis':
+        return this.openRouterAnalysisModel;
+      case 'chat':
+      default:
+        return this.openRouterChatModel;
+    }
+  }
+
+  _extractOpenRouterContent(message) {
+    const content = message?.content;
+    if (typeof content === 'string') {
+      return content;
+    }
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => {
+          if (typeof part === 'string') return part;
+          return part?.text || part?.content || '';
+        })
+        .filter(Boolean)
+        .join('');
+    }
+    return '';
+  }
+
   async generate(prompt, options = {}) {
-    const provider = options.provider
-      ? this._normalizeProviderName(options.provider, this.provider)
-      : options.stage
-        ? this.getProviderForStage(options.stage)
-        : options.model === this.analysisModel
-          ? this.analysisProvider
-          : options.model === this.decisionModel
-            ? this.decisionProvider
-            : this.chatProvider;
-
-    if (provider === 'gemini') {
-      if (!this.geminiClient) {
-        throw new Error('Gemini client not configured');
-      }
-      return this._generateGemini(prompt, options);
-    }
-    return this._generateOllama(prompt, options);
+    return this._generateOpenRouter(prompt, {
+      ...options,
+      provider: 'openrouter'
+    });
   }
 
-  async _generateGemini(prompt, options = {}) {
-    const maxTokens = options.max_tokens ?? 200;
-    const temperature = options.temperature ?? 0.7;
-    const topP = options.top_p ?? 0.9;
-    const timeoutMs = options.timeout_ms ?? 30000;
-
-    // Select model based on context
-    let modelName = this.geminiChatModel;
-    if (options.model === this.analysisModel) {
-      modelName = this.geminiAnalysisModel;
-    } else if (options.model === this.decisionModel) {
-      modelName = this.geminiDecisionModel;
+  async _generateOpenRouter(prompt, options = {}) {
+    if (!this.openRouterApiKey || this.openRouterApiKey === 'YOUR_OPENROUTER_API_KEY_HERE') {
+      throw new Error('OpenRouter API key not configured');
     }
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      try {
-        const model = this.geminiClient.getGenerativeModel({ model: modelName });
-
-        const generationConfig = {
-          temperature,
-          topP,
-          maxOutputTokens: maxTokens,
-        };
-
-        if (options.json) {
-          generationConfig.responseMimeType = 'application/json';
-        }
-
-        if (Array.isArray(options.stop) && options.stop.length > 0) {
-          generationConfig.stopSequences = options.stop.filter(s => s.trim());
-        }
-
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-        const result = await model.generateContent({
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig
-        });
-
-        clearTimeout(timer);
-
-        const text = result.response?.text?.() || '';
-        if (!text) throw new Error('Empty response from Gemini');
-
-        return text.trim();
-      } catch (error) {
-        const isLastAttempt = attempt === this.maxRetries;
-        console.error(`LLM Gemini error (attempt ${attempt + 1}/${this.maxRetries + 1}):`, error.message);
-
-        if (isLastAttempt) {
-          throw new Error(`LLM generation failed after ${attempt + 1} attempts: ${error.message}`);
-        }
-        await this._sleep(this.retryDelayMs * (attempt + 1));
-      }
-    }
-  }
-
-  async _generateOllama(prompt, options = {}) {
     const maxTokens = options.max_tokens ?? this.maxTokens;
-    const selectedModel = options.model || this.chatModel;
+    const selectedModel = options.openrouterModel || options.model || this._getOpenRouterModelForStage(options.stage || 'chat');
     const timeoutMs = options.timeout_ms ?? this.timeoutMs;
-    const numCtx = options.num_ctx ?? this.numCtx;
+    const maxRetries = Math.max(0, parseInt(options.max_retries ?? this.maxRetries, 10) || 0);
+    const retryDelayMs = Math.max(0, parseInt(options.retry_delay_ms ?? this.retryDelayMs, 10) || 0);
     const modelConfig = this._getModelConfig(selectedModel);
+    const headers = {
+      Authorization: `Bearer ${this.openRouterApiKey}`,
+      'Content-Type': 'application/json'
+    };
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+    if (this.openRouterHttpReferer) {
+      headers['HTTP-Referer'] = this.openRouterHttpReferer;
+    }
+    if (this.openRouterAppTitle) {
+      headers['X-OpenRouter-Title'] = this.openRouterAppTitle;
+    }
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const payload = {
           model: selectedModel,
-          prompt,
+          messages: [{ role: 'user', content: prompt }],
           stream: false,
-          keep_alive: options.keep_alive || undefined,
-          options: {
-            temperature: options.temperature ?? modelConfig.temperature,
-            top_p: options.top_p ?? modelConfig.top_p,
-            repeat_penalty: modelConfig.repeat_penalty,
-            num_predict: maxTokens,
-            num_ctx: numCtx
-          }
+          temperature: options.temperature ?? modelConfig.temperature,
+          top_p: options.top_p ?? modelConfig.top_p,
+          max_tokens: maxTokens
         };
 
         if (Array.isArray(options.stop) && options.stop.length > 0) {
-          payload.options.stop = options.stop;
+          payload.stop = options.stop;
         }
 
         if (options.json) {
-          payload.format = 'json';
+          payload.response_format = { type: 'json_object' };
         }
 
         const response = await axios.post(
-          `${this.ollamaUrl}/api/generate`,
+          `${this.openRouterUrl.replace(/\/+$/, '')}/chat/completions`,
           payload,
-          { timeout: timeoutMs }
+          { headers, timeout: timeoutMs }
         );
 
-        if (response.data && response.data.response) {
-          return response.data.response.trim();
+        const message = response.data?.choices?.[0]?.message;
+        const text = this._extractOpenRouterContent(message);
+        if (text) {
+          return text.trim();
         }
-        throw new Error('Empty response from Ollama');
+        throw new Error('Empty response from OpenRouter');
       } catch (error) {
         const statusCode = Number(error?.response?.status || 0);
         const isFatalClientError = statusCode >= 400 && statusCode < 500 && statusCode !== 429;
-        const isLastAttempt = attempt === this.maxRetries;
-        console.error(`LLM Ollama error (attempt ${attempt + 1}/${this.maxRetries + 1}):`, error.message);
+        const isLastAttempt = attempt === maxRetries;
+        const details = error?.response?.data?.error?.message || error.message;
+        console.error(`LLM OpenRouter error (attempt ${attempt + 1}/${maxRetries + 1}):`, details);
 
         if (isFatalClientError || isLastAttempt) {
-          throw new Error(`LLM generation failed after ${attempt + 1} attempts: ${error.message}`);
+          throw new Error(`LLM generation failed after ${attempt + 1} attempts: ${details}`);
         }
-        await this._sleep(this.retryDelayMs * (attempt + 1));
+        await this._sleep(retryDelayMs * (attempt + 1));
       }
     }
   }
@@ -723,12 +600,10 @@ PATIENT SAID: ${this._sanitizeForPrompt(latestUserMessage, 300)}
 Your reply (1-2 sentences only):`;
 
     const response = await this.generate(prompt, {
-      max_tokens: provider === 'ollama' ? 80 : 140,
+      max_tokens: 140,
       temperature: 0.55,
-      model: this.chatModel,
       provider,
-      stage: 'chat',
-      num_ctx: provider === 'ollama' ? 1024 : undefined
+      stage: 'chat'
     });
 
     return this._sanitizeConversationReply(response);
@@ -1155,17 +1030,15 @@ You MUST return ONLY a valid JSON object. No markdown, no explanation, no code f
 
     const result = await this._generateValidatedJson({
       prompt,
-      model: this.chatModel,
       provider,
       validator: validateRealtimeTurn,
       generationOptions: {
         temperature: 0.3,
         top_p: 0.85,
-        max_tokens: provider === 'ollama' ? 200 : 400,
-        num_ctx: provider === 'ollama' ? 1024 : (parseInt(process.env.LLM_NUM_CTX_REALTIME, 10) || 1536),
+        max_tokens: 400,
         stop: ['\nPatient:', '\nAssistant:'],
-        keep_alive: '30m',
-        timeout_ms: provider === 'ollama' ? 30000 : (parseInt(process.env.LLM_REALTIME_TIMEOUT_MS, 10) || 60000)
+        timeout_ms: parseInt(process.env.LLM_REALTIME_TIMEOUT_MS, 10) || 8000,
+        max_retries: Math.max(0, parseInt(process.env.LLM_REALTIME_MAX_RETRIES, 10) || 0)
       },
       schemaHelp
     });
@@ -1305,35 +1178,28 @@ ${this._sanitizeForPrompt(response, 7000)}`;
     return { hasPatientSpeech: patientText.length > 0, appointmentConfirmed, requestedCallback, barrierType, politeClose };
   }
 
-  // ── Model Runtime Management (Ollama-only) ─────────────────────────────
+  // ── Model Runtime Management (OpenRouter-only no-ops) ──────────────────
 
   async acquireRealtimeSession() {
-    if (this.getProviderForStage('realtime') !== 'ollama') {
-      return async () => { };
-    }
-    return this.runtimeManager.acquireRealtimeSession();
+    return async () => { };
   }
 
   async ensureAnalysisModel(options = {}) {
-    if (this.getProviderForStage('analysis') !== 'ollama') return;
-    return this.runtimeManager.ensureAnalysisModel(options);
+    return undefined;
   }
 
   async releaseAnalysisModel() {
-    if (this.getProviderForStage('analysis') !== 'ollama') return;
-    return this.runtimeManager.releaseAnalysisModel();
+    return undefined;
   }
 
   getRuntimeState() {
     const providers = this._configuredStageProviders();
-    const runtimeState = this.usesProvider('ollama')
-      ? this.runtimeManager.getState()
-      : {
-          stage: 'gemini',
-          activeRealtimeSessions: 0,
-          realtimeModel: this.geminiChatModel,
-          analysisModel: this.geminiAnalysisModel
-        };
+    const runtimeState = {
+      stage: 'openrouter',
+      activeRealtimeSessions: 0,
+      realtimeModel: this.openRouterRealtimeModel,
+      analysisModel: this.openRouterAnalysisModel
+    };
 
     return {
       ...runtimeState,

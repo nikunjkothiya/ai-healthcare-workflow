@@ -57,14 +57,16 @@ class AgentController {
           console.log(`Agent decision for call ${callId} (LLM):`, mapped);
           return mapped;
         }
+        throw new Error('LLM decision did not map to a supported action');
       } catch (llmError) {
-        console.warn(`LLM decision failed for call ${callId}, using rule fallback:`, llmError.message);
+        console.warn(`LLM decision failed for call ${callId}; escalating to human follow-up:`, llmError.message);
+        return {
+          action: ACTIONS.TRANSFER_HUMAN,
+          reason: 'llm_decision_unavailable',
+          message: 'I want to make sure this is handled correctly. A care coordinator will follow up with you shortly.',
+          nextState: 'requires_followup'
+        };
       }
-
-      // Fallback: deterministic rules.
-      const fallbackAction = this.determineAction(analysis, config, patient);
-      console.log(`Agent decision for call ${callId} (fallback):`, fallbackAction);
-      return fallbackAction;
     } catch (error) {
       console.error('Agent decision error:', error);
       return {
@@ -285,67 +287,6 @@ REMEMBER: You are here to help, not to pressure. If patient is busy or uncomfort
   }
 
   /**
-   * Determine next action based on analysis
-   * @param {object} analysis - Conversation analysis
-   * @param {object} config - Agent config
-   * @param {object} patient - Patient info
-   * @returns {object} Action decision
-   */
-  determineAction(analysis, config, patient) {
-    // If barriers detected, escalate to follow-up
-    if (analysis.hasBarrier) {
-      const barrierTypes = analysis.barriers.map(b => b.type).join(', ');
-      return {
-        action: ACTIONS.SCHEDULE_FOLLOWUP,
-        reason: 'barriers_detected',
-        message: `I understand you have some concerns. A care coordinator will call you back to help with ${barrierTypes} assistance.`,
-        nextState: 'requires_followup',
-        barriers: analysis.barriers
-      };
-    }
-
-    // End call if goodbye detected
-    if (analysis.hasEndKeyword) {
-      return {
-        action: ACTIONS.END_CALL,
-        reason: 'end_keyword_detected',
-        message: 'Thank you for your time. Have a great day!',
-        nextState: 'completed'
-      };
-    }
-
-    // Schedule followup if requested
-    if (analysis.hasFollowupKeyword) {
-      return {
-        action: ACTIONS.SCHEDULE_FOLLOWUP,
-        reason: 'followup_requested',
-        message: 'I understand. We will call you back at a better time.',
-        nextState: 'requires_followup'
-      };
-    }
-
-    // End if max turns exceeded
-    if (analysis.exceedsMaxTurns) {
-      return {
-        action: ACTIONS.END_CALL,
-        reason: 'max_turns_exceeded',
-        message: 'Thank you for your time. We will follow up if needed.',
-        nextState: 'completed'
-      };
-    }
-
-    // Continue conversation with context-aware prompt
-    const promptTemplate = this.buildContextualPrompt(patient, config);
-
-    return {
-      action: ACTIONS.GENERATE_RESPONSE,
-      reason: 'continue_conversation',
-      promptTemplate: promptTemplate,
-      nextState: 'awaiting_response'
-    };
-  }
-
-  /**
    * Convert LLM decision payload into orchestrator action.
    * @param {object} llmDecision
    * @param {object} analysis
@@ -418,6 +359,30 @@ REMEMBER: You are here to help, not to pressure. If patient is busy or uncomfort
 
     if (!cleaned) return null;
     return cleaned.length > 220 ? `${cleaned.slice(0, 217)}...` : cleaned;
+  }
+
+  sanitizeGreetingMessage(message) {
+    const raw = String(message || '').replace(/\r/g, ' ').trim();
+    if (!raw) {
+      return "Hello, I'm calling from the healthcare center. Do you have a moment to talk?";
+    }
+
+    let cleaned = raw
+      .replace(/\bI\s*'?\s*am\b/gi, "I'm")
+      .replace(/\bI\s*'?\s*m\b/gi, "I'm")
+      .replace(/\bI'm\s+(?:an?\s+)?AI\s+agent\s+from\s+/gi, "I'm calling from ")
+      .replace(/\bI am\s+(?:an?\s+)?AI\s+agent\s+from\s+/gi, "I'm calling from ")
+      .replace(/\b(?:an?\s+)?AI\s+agent\b/gi, 'care assistant')
+      .replace(/\bAI\b/g, 'care team')
+      .replace(/\band calling you\b/gi, ', calling you')
+      .replace(/\s+/g, ' ')
+      .replace(/\s+([,.!?])/g, '$1')
+      .trim();
+
+    const sentences = cleaned.match(/[^.!?]+[.!?]?/g) || [];
+    cleaned = sentences.slice(0, 2).join(' ').trim() || cleaned;
+
+    return cleaned.length > 240 ? `${cleaned.slice(0, 237)}...` : cleaned;
   }
 
   /**
@@ -589,25 +554,25 @@ REMEMBER: You are here to help, not to pressure. If patient is busy or uncomfort
         greeting = greeting.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'gi'), value);
       }
 
-      return greeting.trim();
+      return this.sanitizeGreetingMessage(greeting);
     }
 
     // Try campaign-type-specific greeting
     const typeGreeting = this.getCampaignTypeGreeting(campaignType, patientName, metadata);
     if (typeGreeting) {
-      return typeGreeting;
+      return this.sanitizeGreetingMessage(typeGreeting);
     }
 
     // Fallback: build greeting from patient metadata when no campaign script
     if (metadata.appointment_type && metadata.appointment_date && (metadata.doctor || metadata.doctor_name)) {
-      return `Hello${patientName ? ' ' + patientName : ''}, this is the healthcare center calling about your ${metadata.appointment_type} appointment with ${metadata.doctor || metadata.doctor_name} on ${metadata.appointment_date}. Do you have a moment to confirm?`;
+      return this.sanitizeGreetingMessage(`Hello${patientName ? ' ' + patientName : ''}, this is the healthcare center calling about your ${metadata.appointment_type} appointment with ${metadata.doctor || metadata.doctor_name} on ${metadata.appointment_date}. Do you have a moment to confirm?`);
     } else if (metadata.appointment_date && (metadata.doctor || metadata.doctor_name)) {
-      return `Hello${patientName ? ' ' + patientName : ''}, I'm calling from the healthcare center to confirm your appointment with ${metadata.doctor || metadata.doctor_name} on ${metadata.appointment_date}. Is now a good time?`;
+      return this.sanitizeGreetingMessage(`Hello${patientName ? ' ' + patientName : ''}, I'm calling from the healthcare center to confirm your appointment with ${metadata.doctor || metadata.doctor_name} on ${metadata.appointment_date}. Is now a good time?`);
     } else if (metadata.appointment_date) {
-      return `Hello${patientName ? ' ' + patientName : ''}, I'm calling from the healthcare center about your upcoming appointment on ${metadata.appointment_date}. Can we confirm your appointment?`;
+      return this.sanitizeGreetingMessage(`Hello${patientName ? ' ' + patientName : ''}, I'm calling from the healthcare center about your upcoming appointment on ${metadata.appointment_date}. Can we confirm your appointment?`);
     }
 
-    return `Hello${patientName ? ' ' + patientName : ''}, I'm calling from the healthcare center to confirm your upcoming appointment. Do you have a quick moment?`;
+    return this.sanitizeGreetingMessage(`Hello${patientName ? ' ' + patientName : ''}, I'm calling from the healthcare center to confirm your upcoming appointment. Do you have a quick moment?`);
   }
 }
 

@@ -1,6 +1,6 @@
 <template>
   <div class="live-call">
-    <h1>Live Call Mode</h1>
+    <h1>Test Patient Call</h1>
     
     <div class="call-container">
       <div class="call-status" :class="callState">
@@ -37,7 +37,7 @@
             :key="index" 
             :class="'message ' + msg.role"
           >
-            <div class="message-role">{{ msg.role === 'user' ? 'You' : 'AI Assistant' }}</div>
+            <div class="message-role">{{ msg.role === 'user' ? 'Patient' : 'Care Assistant' }}</div>
             <div class="message-text">{{ msg.text }}</div>
           </div>
         </div>
@@ -47,26 +47,26 @@
         <h3>Call Summary</h3>
         <div class="result-grid">
           <div class="result-item">
-            <strong>Duration:</strong> {{ result.duration }}s
+            <strong>Duration:</strong> {{ formatCallDuration(result.duration, resultCall) }}
           </div>
           <div class="result-item">
-            <strong>Sentiment:</strong> 
-            <span :class="'sentiment-badge ' + result.structured.sentiment">
-              {{ result.structured.sentiment }}
+            <strong>Conversation Tone:</strong>
+            <span :class="'tone-badge ' + toneClass(resultCall.sentiment, resultCall)">
+              {{ formatConversationTone(resultCall.sentiment, resultCall) }}
             </span>
           </div>
           <div class="result-item">
-            <strong>Appointment Confirmed:</strong> 
-            {{ result.structured.appointment_confirmed ? '✅ Yes' : '❌ No' }}
+            <strong>Appointment Status:</strong>
+            {{ formatAppointmentOutcome(resultCall) }}
           </div>
           <div class="result-item">
-            <strong>Callback Requested:</strong> 
-            {{ result.structured.requested_callback ? '✅ Yes' : '❌ No' }}
+            <strong>Follow-up Needed:</strong>
+            {{ formatFollowupOutcome(resultCall) }}
           </div>
         </div>
         <div class="result-summary">
-          <strong>Summary:</strong>
-          <p>{{ result.structured.summary }}</p>
+          <strong>Call Summary:</strong>
+          <p>{{ formatSummary(resultCall.summary, resultCall) }}</p>
         </div>
       </div>
     </div>
@@ -74,6 +74,15 @@
 </template>
 
 <script>
+import {
+  formatAppointmentOutcome,
+  formatCallDuration,
+  formatConversationTone,
+  formatFollowupOutcome,
+  formatSummary,
+  toneClass
+} from '../displayLabels.js';
+
 export default {
   name: 'LiveCall',
   data() {
@@ -89,12 +98,22 @@ export default {
     };
   },
   computed: {
+    resultCall() {
+      const structured = this.result?.structured || {};
+      return {
+        ...structured,
+        duration: this.result?.duration || 0,
+        transcript: this.result?.transcript || '',
+        summary: structured.summary || '',
+        state: this.result?.state || 'completed'
+      };
+    },
     statusText() {
       switch (this.callState) {
         case 'idle':
-          return 'Ready to start call';
+          return 'Ready to place a test call';
         case 'connected':
-          return 'Call in progress - Speak now';
+          return 'Call in progress';
         case 'ended':
           return 'Call ended';
         default:
@@ -103,6 +122,12 @@ export default {
     }
   },
   methods: {
+    formatAppointmentOutcome,
+    formatCallDuration,
+    formatConversationTone,
+    formatFollowupOutcome,
+    formatSummary,
+    toneClass,
     async startCall() {
       try {
         this.callState = 'connected';
@@ -547,24 +572,24 @@ export default {
   color: #34495e;
 }
 
-.sentiment-badge {
+.tone-badge {
   padding: 0.25rem 0.75rem;
   border-radius: 12px;
   font-size: 0.85rem;
   font-weight: 600;
 }
 
-.sentiment-badge.positive {
+.tone-badge.positive {
   background: #d4edda;
   color: #155724;
 }
 
-.sentiment-badge.neutral {
+.tone-badge.neutral {
   background: #fff3cd;
   color: #856404;
 }
 
-.sentiment-badge.negative {
+.tone-badge.negative {
   background: #f8d7da;
   color: #721c24;
 }

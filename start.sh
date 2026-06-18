@@ -38,7 +38,7 @@ warning() {
 
 echo ""
 echo "=========================================="
-echo "🏥 AI Healthcare Voice Agent"
+echo "Care Outreach Assistant"
 echo "   Complete System Startup"
 echo "=========================================="
 echo ""
@@ -94,26 +94,17 @@ DB_PORT=5432
 REDIS_HOST=redis
 REDIS_PORT=6379
 JWT_SECRET=supersecret_change_in_production
-LLM_PROVIDER=gemini
-LLM_CHAT_PROVIDER=ollama
-LLM_REALTIME_PROVIDER=ollama
-LLM_DECISION_PROVIDER=ollama
-LLM_ANALYSIS_PROVIDER=gemini
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
-GEMINI_MODEL_CHAT=gemini-2.0-flash
-GEMINI_MODEL_ANALYSIS=gemini-2.0-flash
-GEMINI_MODEL_DECISION=gemini-2.0-flash
-OLLAMA_URL=http://ollama:11434
-OLLAMA_MODEL_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_CHAT_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_ANALYSIS_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_DECISION_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
-LLM_MAX_TOKENS=200
-LLM_NUM_CTX=1536
-LLM_NUM_CTX_REALTIME=1536
-LLM_MAX_TOKENS_ANALYSIS=768
-LLM_NUM_CTX_ANALYSIS=8192
-LLM_TIMEOUT_MS=45000
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=YOUR_OPENROUTER_API_KEY_HERE
+OPENROUTER_MODEL=openrouter/free
+OPENROUTER_HTTP_REFERER=http://localhost:3000
+OPENROUTER_APP_TITLE=Care Outreach Assistant
+LLM_TIMEOUT_MS=15000
+LLM_MAX_RETRIES=1
+LLM_RETRY_DELAY_MS=800
+LLM_REALTIME_TIMEOUT_MS=8000
+LLM_REALTIME_MAX_RETRIES=0
+LLM_FAILURE_HANDOFF=true
 WORKER_CONCURRENCY=1
 CALL_SPACING_MS=15000
 RING_TIMEOUT_MS=30000
@@ -121,30 +112,32 @@ WEBSOCKET_CALL_MAX_WAIT_MS=720000
 POST_CALL_ANALYSIS_MAX_WAIT_MS=90000
 WHISPER_HOST=whisper
 WHISPER_PORT=9000
-WHISPER_MODEL_PATH=/models/whisper/ggml-small.en.bin
+WHISPER_MODEL_PATH=/models/whisper/ggml-small.en-q5_1.bin
 STT_CHUNK_MS=2500
-STT_REALTIME_CHUNK_MS=1800
-STT_SILENCE_MS=800
-TTS_HOST=tts
-TTS_PORT=5002
-TTS_MODEL_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar
-TTS_CONFIG_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/config.json
-TTS_VOCODER_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file.pth.tar
-TTS_VOCODER_CONFIG_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json
+STT_REALTIME_CHUNK_MS=8000
+STT_REALTIME_SPLIT=false
+STT_REALTIME_SPLIT_THRESHOLD_MS=15000
+STT_SILENCE_MS=500
+VAD_MODEL_PATH=/models/vad/silero_vad_op18_ifless.onnx
+KOKORO_HOST=kokoro
+KOKORO_PORT=8880
+KOKORO_VOICE=af_bella
+KOKORO_LANG=en-us
 MAX_CALL_DURATION_MS=600000
 MAX_CONVERSATION_TURNS=30
 MAX_RUNTIME_RAM_GB=14
+ASSISTANT_SPEECH_GUARD_MS=350
 REQUIRE_SERVER_TTS=true
 VITE_REQUIRE_SERVER_TTS=true
 VITE_VAD_SPEECH_THRESHOLD=0.007
 VITE_VAD_SILENCE_THRESHOLD=0.0035
-VITE_VAD_MIN_SPEECH_MS=450
-VITE_VAD_END_SILENCE_MS=1000
-VITE_VAD_MAX_UTTERANCE_MS=12000
+VITE_VAD_MIN_SPEECH_MS=300
+VITE_VAD_END_SILENCE_MS=650
+VITE_VAD_MAX_UTTERANCE_MS=8000
 NODE_ENV=production
 EOF
     success ".env file created"
-    warning "⚠ Update GEMINI_API_KEY in .env before starting!"
+    warning "⚠ Update OPENROUTER_API_KEY in .env before starting!"
 else
     success ".env file exists"
 fi
@@ -153,30 +146,6 @@ fi
 get_env_value() {
     local key="$1"
     grep -E "^${key}=" .env | tail -n 1 | cut -d '=' -f2- | tr -d '\r' | xargs
-}
-
-resolve_stage_provider() {
-    local key="$1"
-    local fallback="$2"
-    local value
-    value=$(get_env_value "$key")
-    if [ -z "$value" ]; then
-        echo "$fallback"
-        return
-    fi
-    echo "$value"
-}
-
-uses_provider() {
-    local target="$1"
-    shift
-    local provider
-    for provider in "$@"; do
-        if [ "$provider" = "$target" ]; then
-            return 0
-        fi
-    done
-    return 1
 }
 
 resolve_model_host_path() {
@@ -210,76 +179,29 @@ $help_text"
 
 section "STEP 2: Validating Local AI Model Files"
 
-# Detect LLM provider
-LLM_PROVIDER=$(get_env_value "LLM_PROVIDER")
-if [ -z "$LLM_PROVIDER" ]; then
-    LLM_PROVIDER="gemini"
+OPENROUTER_API_KEY=$(get_env_value "OPENROUTER_API_KEY")
+if [ -z "$OPENROUTER_API_KEY" ] || [ "$OPENROUTER_API_KEY" = "YOUR_OPENROUTER_API_KEY_HERE" ]; then
+    error "OPENROUTER_API_KEY is required. Add your OpenRouter key to .env."
 fi
-LLM_CHAT_PROVIDER=$(resolve_stage_provider "LLM_CHAT_PROVIDER" "$LLM_PROVIDER")
-LLM_REALTIME_PROVIDER=$(resolve_stage_provider "LLM_REALTIME_PROVIDER" "$LLM_CHAT_PROVIDER")
-LLM_DECISION_PROVIDER=$(resolve_stage_provider "LLM_DECISION_PROVIDER" "$LLM_CHAT_PROVIDER")
-LLM_ANALYSIS_PROVIDER=$(resolve_stage_provider "LLM_ANALYSIS_PROVIDER" "$LLM_PROVIDER")
-
-USES_OLLAMA=false
-if uses_provider "ollama" "$LLM_PROVIDER" "$LLM_CHAT_PROVIDER" "$LLM_REALTIME_PROVIDER" "$LLM_DECISION_PROVIDER" "$LLM_ANALYSIS_PROVIDER"; then
-    USES_OLLAMA=true
+OPENROUTER_MODEL=$(get_env_value "OPENROUTER_MODEL")
+if [ -z "$OPENROUTER_MODEL" ]; then
+    OPENROUTER_MODEL="openrouter/free"
+fi
+info "LLM routing: OpenRouter only (${OPENROUTER_MODEL})"
+if [ "$OPENROUTER_MODEL" = "openrouter/free" ]; then
+    warning "OPENROUTER_MODEL=openrouter/free uses OpenRouter's free router. It is zero-cost but not model-stable; validate calls before production use."
 fi
 
-USES_GEMINI=false
-if uses_provider "gemini" "$LLM_PROVIDER" "$LLM_CHAT_PROVIDER" "$LLM_REALTIME_PROVIDER" "$LLM_DECISION_PROVIDER" "$LLM_ANALYSIS_PROVIDER"; then
-    USES_GEMINI=true
-fi
-
-info "LLM routing: chat=${LLM_CHAT_PROVIDER}, realtime=${LLM_REALTIME_PROVIDER}, decision=${LLM_DECISION_PROVIDER}, analysis=${LLM_ANALYSIS_PROVIDER}"
-
-if [ "$USES_OLLAMA" = "true" ]; then
-    OLLAMA_MODEL_PATH=$(get_env_value "OLLAMA_MODEL_PATH")
-    OLLAMA_MODEL_CHAT_PATH=$(get_env_value "OLLAMA_MODEL_CHAT_PATH")
-    OLLAMA_MODEL_ANALYSIS_PATH=$(get_env_value "OLLAMA_MODEL_ANALYSIS_PATH")
-    OLLAMA_MODEL_DECISION_PATH=$(get_env_value "OLLAMA_MODEL_DECISION_PATH")
-
-    if [ -z "$OLLAMA_MODEL_PATH" ]; then
-        OLLAMA_MODEL_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
-    fi
-    if [ -z "$OLLAMA_MODEL_CHAT_PATH" ]; then
-        OLLAMA_MODEL_CHAT_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
-    fi
-    if [ -z "$OLLAMA_MODEL_ANALYSIS_PATH" ]; then
-        OLLAMA_MODEL_ANALYSIS_PATH="/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf"
-    fi
-    if [ -z "$OLLAMA_MODEL_DECISION_PATH" ]; then
-        OLLAMA_MODEL_DECISION_PATH="/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf"
-    fi
-
-    HOST_OLLAMA_MODEL_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_PATH" "/models/ollama/" "./models/ollama/")
-    HOST_OLLAMA_MODEL_CHAT_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_CHAT_PATH" "/models/ollama/" "./models/ollama/")
-    HOST_OLLAMA_MODEL_ANALYSIS_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_ANALYSIS_PATH" "/models/ollama/" "./models/ollama/")
-    HOST_OLLAMA_MODEL_DECISION_PATH=$(resolve_model_host_path "$OLLAMA_MODEL_DECISION_PATH" "/models/ollama/" "./models/ollama/")
-
-    info "Checking local Ollama GGUF model files..."
-    assert_local_file "Ollama base model" "$HOST_OLLAMA_MODEL_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
-    assert_local_file "Ollama chat model" "$HOST_OLLAMA_MODEL_CHAT_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
-    assert_local_file "Ollama analysis model" "$HOST_OLLAMA_MODEL_ANALYSIS_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
-    assert_local_file "Ollama decision model" "$HOST_OLLAMA_MODEL_DECISION_PATH" "Place GGUF files under ./models/ollama and update OLLAMA_MODEL*_PATH values in .env."
-    success "Local Ollama model files are ready"
-else
-    info "No stage is routed through Ollama (skipping Ollama model validation)"
-fi
-
-if [ "$USES_GEMINI" = "true" ]; then
-    GEMINI_API_KEY=$(get_env_value "GEMINI_API_KEY")
-    if [ -z "$GEMINI_API_KEY" ] || [ "$GEMINI_API_KEY" = "YOUR_GEMINI_API_KEY_HERE" ]; then
-        warning "⚠ GEMINI_API_KEY is not set in .env! Update it before making calls."
-    else
-        success "Gemini API key is configured"
-    fi
-else
-    info "No stage is routed through Gemini API"
+OPENROUTER_HTTP_REFERER=$(get_env_value "OPENROUTER_HTTP_REFERER")
+if [ -z "$OPENROUTER_HTTP_REFERER" ]; then
+    info "OpenRouter attribution header not set; using local frontend URL for development."
+elif [[ "$OPENROUTER_HTTP_REFERER" == http://localhost* ]] && [ "${NODE_ENV:-production}" = "production" ]; then
+    warning "OPENROUTER_HTTP_REFERER is localhost. For deployed production, set it to your real frontend URL."
 fi
 
 WHISPER_MODEL_PATH=$(get_env_value "WHISPER_MODEL_PATH")
 if [ -z "$WHISPER_MODEL_PATH" ]; then
-    WHISPER_MODEL_PATH="/models/whisper/ggml-small.en.bin"
+    WHISPER_MODEL_PATH="/models/whisper/ggml-small.en-q5_1.bin"
 fi
 
 HOST_WHISPER_MODEL_PATH=$(resolve_model_host_path "$WHISPER_MODEL_PATH" "/models/whisper/" "./models/whisper/")
@@ -288,37 +210,17 @@ info "Checking local Whisper model file..."
 assert_local_file "Whisper model" "$HOST_WHISPER_MODEL_PATH" "Place Whisper GGML files under ./models/whisper and update WHISPER_MODEL_PATH in .env."
 success "Local Whisper model file is ready"
 
-section "STEP 2B: Validating Local TTS Model Files"
-
-TTS_MODEL_PATH=$(get_env_value "TTS_MODEL_PATH")
-TTS_CONFIG_PATH=$(get_env_value "TTS_CONFIG_PATH")
-TTS_VOCODER_PATH=$(get_env_value "TTS_VOCODER_PATH")
-TTS_VOCODER_CONFIG_PATH=$(get_env_value "TTS_VOCODER_CONFIG_PATH")
-
-if [ -z "$TTS_MODEL_PATH" ]; then
-    TTS_MODEL_PATH="/models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar"
-fi
-if [ -z "$TTS_CONFIG_PATH" ]; then
-    TTS_CONFIG_PATH="/models/tts/tts_models--en--ljspeech--tacotron2-DDC/config.json"
-fi
-if [ -z "$TTS_VOCODER_PATH" ]; then
-    TTS_VOCODER_PATH="/models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file.pth.tar"
-fi
-if [ -z "$TTS_VOCODER_CONFIG_PATH" ]; then
-    TTS_VOCODER_CONFIG_PATH="/models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json"
+VAD_MODEL_PATH=$(get_env_value "VAD_MODEL_PATH")
+if [ -n "$VAD_MODEL_PATH" ]; then
+    HOST_VAD_MODEL_PATH=$(resolve_model_host_path "$VAD_MODEL_PATH" "/models/vad/" "./models/vad/")
+    info "Checking local Silero VAD model file..."
+    assert_local_file "Silero VAD model" "$HOST_VAD_MODEL_PATH" "Place Silero ONNX files under ./models/vad and update VAD_MODEL_PATH in .env."
+    success "Local Silero VAD model file is ready"
 fi
 
-HOST_TTS_MODEL_PATH=$(resolve_model_host_path "$TTS_MODEL_PATH" "/models/tts/" "./models/tts/")
-HOST_TTS_CONFIG_PATH=$(resolve_model_host_path "$TTS_CONFIG_PATH" "/models/tts/" "./models/tts/")
-HOST_TTS_VOCODER_PATH=$(resolve_model_host_path "$TTS_VOCODER_PATH" "/models/tts/" "./models/tts/")
-HOST_TTS_VOCODER_CONFIG_PATH=$(resolve_model_host_path "$TTS_VOCODER_CONFIG_PATH" "/models/tts/" "./models/tts/")
-
-info "Checking local Coqui TTS model files..."
-assert_local_file "TTS model" "$HOST_TTS_MODEL_PATH" "Place Coqui model files under ./models/tts and update TTS_* paths in .env."
-assert_local_file "TTS config" "$HOST_TTS_CONFIG_PATH" "Place Coqui model files under ./models/tts and update TTS_* paths in .env."
-assert_local_file "TTS vocoder model" "$HOST_TTS_VOCODER_PATH" "Place Coqui model files under ./models/tts and update TTS_* paths in .env."
-assert_local_file "TTS vocoder config" "$HOST_TTS_VOCODER_CONFIG_PATH" "Place Coqui model files under ./models/tts and update TTS_* paths in .env."
-success "Local Coqui TTS model files are ready"
+section "STEP 2B: Validating TTS Configuration"
+info "TTS provider: Kokoro (${KOKORO_VOICE:-af_bella}, ${KOKORO_LANG:-en-us})"
+success "Kokoro TTS is configured"
 
 # Check if system is already running
 section "STEP 3: Checking Existing Containers"
@@ -375,12 +277,7 @@ info "Starting containers..."
 info "This will take 2-3 minutes for initialization"
 echo ""
 
-# Start services (enable Ollama profile whenever any stage uses local models)
-if [ "$USES_OLLAMA" = "true" ]; then
-    docker compose --profile ollama up -d
-else
-    docker compose up -d
-fi
+docker compose up -d
 
 if [ $? -ne 0 ]; then
     error "Failed to start services. Check logs with: docker compose logs"
@@ -424,18 +321,6 @@ if wait_for_service "healthcare_redis"; then
     success "Redis is ready"
 else
     error "Redis failed to start. Check logs: docker logs healthcare_redis"
-fi
-
-# Ollama (only when at least one stage uses local models)
-if [ "$USES_OLLAMA" = "true" ]; then
-    info "Waiting for Ollama..."
-    if wait_for_service "healthcare_ollama"; then
-        success "Ollama is ready"
-    else
-        error "Ollama failed to start. Check logs: docker logs healthcare_ollama"
-    fi
-else
-    info "Ollama container not required for current stage routing"
 fi
 
 # Whisper

@@ -41,33 +41,6 @@ services:
     networks:
       - healthcare_network
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: healthcare_ollama
-    profiles:
-      - ollama
-    ports:
-      - "11434:11434"
-    environment:
-      - OLLAMA_HOST=0.0.0.0:11434
-      - OLLAMA_MODEL_PATH=${OLLAMA_MODEL_PATH}
-      - OLLAMA_MODEL_CHAT_PATH=${OLLAMA_MODEL_CHAT_PATH}
-      - OLLAMA_MODEL_DECISION_PATH=${OLLAMA_MODEL_DECISION_PATH}
-      - OLLAMA_MODEL_ANALYSIS_PATH=${OLLAMA_MODEL_ANALYSIS_PATH}
-    volumes:
-      - ollama_data:/root/.ollama
-      - ./models/ollama:/models/ollama
-      - ./scripts/ollama-entrypoint.sh:/usr/local/bin/ollama-entrypoint.sh:ro
-    entrypoint: ["/bin/sh", "-c", "tr -d '\\r' < /usr/local/bin/ollama-entrypoint.sh > /tmp/ollama-entrypoint.sh && exec /bin/sh /tmp/ollama-entrypoint.sh"]
-    healthcheck:
-      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-      start_period: 30s
-    networks:
-      - healthcare_network
-
   whisper:
     build:
       context: ./ai/whisper
@@ -84,49 +57,22 @@ services:
     networks:
       - healthcare_network
     command: >
-      /whisper.cpp/build/bin/whisper-server --host 0.0.0.0 --port 9000 --inference-path /inference -m ${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en.bin} --language en --no-timestamps -t 4 --print-progress false
+      /whisper.cpp/build/bin/whisper-server --host 0.0.0.0 --port 9000 --inference-path /inference -m ${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en-q5_1.bin} --language en --no-timestamps -t 4
 
-  tts:
-    image: synesthesiam/coqui-tts:latest
-    container_name: healthcare_tts
-    ports:
-      - "5002:5002"
-    entrypoint: ["python3", "-m", "TTS.server.server"]
-    command:
-      - "--model_path"
-      - "${TTS_MODEL_PATH:-/models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar}"
-      - "--config_path"
-      - "${TTS_CONFIG_PATH:-/models/tts/tts_models--en--ljspeech--tacotron2-DDC/config.json}"
-      - "--vocoder_path"
-      - "${TTS_VOCODER_PATH:-/models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file.pth.tar}"
-      - "--vocoder_config_path"
-      - "${TTS_VOCODER_CONFIG_PATH:-/models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json}"
-      - "--use_cuda"
-      - "false"
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5002/"]
-      interval: 15s
-      timeout: 20s
-      retries: 10
-      start_period: 120s
-    deploy:
-      resources:
-        limits:
-          memory: 1024M
-    volumes:
-      - ./models/tts:/models/tts
-    networks:
-      - healthcare_network
-
-  # ── Kokoro-82M TTS (Recommended — #1 TTS Arena, Apache 2.0) ──────────
-  # Replaces Tacotron2 for low-resource deployment.
-  # 82M params, runs on CPU, 50+ voices, natural prosody.
   kokoro:
-    image: ghcr.io/remsky/kokoro-fastapi:latest
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.2
     container_name: healthcare_kokoro
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - uvicorn
+      - api.src.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8880"
+      - --log-level
+      - info
     ports:
       - "${KOKORO_PORT:-8880}:8880"
     environment:
@@ -141,30 +87,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
-    networks:
-      - healthcare_network
-
-  # ── Moonshine STT (Optional — 5x faster than Whisper for edge) ──────
-  # 106M params, optimized for real-time streaming ASR.
-  # Enable with STT_PROVIDER=moonshine
-  moonshine:
-    image: ghcr.io/usefulsensors/moonshine-server:latest
-    container_name: healthcare_moonshine
-    ports:
-      - "${MOONSHINE_PORT:-9001}:9001"
-    environment:
-      - MOONSHINE_MODEL=${MOONSHINE_MODEL:-moonshine/base}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    deploy:
-      resources:
-        limits:
-          memory: 512M
+          memory: 2048M
     networks:
       - healthcare_network
 
@@ -186,41 +109,29 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - JWT_SECRET=${JWT_SECRET:-supersecret_change_in_production}
-      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
-      - LLM_CHAT_PROVIDER=${LLM_CHAT_PROVIDER:-}
-      - LLM_REALTIME_PROVIDER=${LLM_REALTIME_PROVIDER:-}
-      - LLM_DECISION_PROVIDER=${LLM_DECISION_PROVIDER:-}
-      - LLM_ANALYSIS_PROVIDER=${LLM_ANALYSIS_PROVIDER:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_MODEL_CHAT=${GEMINI_MODEL_CHAT:-gemini-2.5-flash}
-      - GEMINI_MODEL_ANALYSIS=${GEMINI_MODEL_ANALYSIS:-gemini-2.5-flash}
-      - GEMINI_MODEL_DECISION=${GEMINI_MODEL_DECISION:-gemini-2.5-flash}
-      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
-      - OLLAMA_MODEL_CHAT=${OLLAMA_MODEL_CHAT:-llama3.2:3b}
-      - OLLAMA_MODEL_DECISION=${OLLAMA_MODEL_DECISION:-llama3.2:3b}
-      - OLLAMA_MODEL_ANALYSIS=${OLLAMA_MODEL_ANALYSIS:-qwen3:8b}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-150}
-      - LLM_NUM_CTX=${LLM_NUM_CTX:-1024}
-      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME:-1024}
-      - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS:-768}
-      - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS:-4096}
-      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-30000}
-      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-30000}
-      - LLM_ANALYSIS_TIMEOUT_MS=${LLM_ANALYSIS_TIMEOUT_MS:-120000}
-      - LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS=${LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS:-18000}
+      - LLM_PROVIDER=openrouter
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_URL=${OPENROUTER_URL:-https://openrouter.ai/api/v1}
+      - OPENROUTER_HTTP_REFERER=${OPENROUTER_HTTP_REFERER:-http://localhost:3000}
+      - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-Care Outreach Assistant}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/free}
+      - OPENROUTER_MODEL_CHAT=${OPENROUTER_MODEL_CHAT:-}
+      - OPENROUTER_MODEL_REALTIME=${OPENROUTER_MODEL_REALTIME:-}
+      - OPENROUTER_MODEL_DECISION=${OPENROUTER_MODEL_DECISION:-}
+      - OPENROUTER_MODEL_ANALYSIS=${OPENROUTER_MODEL_ANALYSIS:-}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-15000}
+      - LLM_MAX_RETRIES=${LLM_MAX_RETRIES:-1}
+      - LLM_RETRY_DELAY_MS=${LLM_RETRY_DELAY_MS:-800}
+      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-8000}
+      - LLM_REALTIME_MAX_RETRIES=${LLM_REALTIME_MAX_RETRIES:-0}
+      - LLM_FAILURE_HANDOFF=${LLM_FAILURE_HANDOFF:-true}
       - CALL_SPACING_MS=${CALL_SPACING_MS:-15000}
       - RING_TIMEOUT_MS=${RING_TIMEOUT_MS:-30000}
       - AUDIO_TMP_DIR=${AUDIO_TMP_DIR:-/tmp/healthcare_audio}
       - WHISPER_HOST=${WHISPER_HOST:-whisper}
       - WHISPER_PORT=${WHISPER_PORT:-9000}
-      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en.bin}
-      - STT_PROVIDER=${STT_PROVIDER:-whisper}
-      - MOONSHINE_HOST=${MOONSHINE_HOST:-moonshine}
-      - MOONSHINE_PORT=${MOONSHINE_PORT:-9001}
-      - MOONSHINE_MODEL=${MOONSHINE_MODEL:-moonshine/base}
-      - TTS_HOST=${TTS_HOST:-tts}
-      - TTS_PORT=${TTS_PORT:-5002}
-      - TTS_PROVIDER=${TTS_PROVIDER:-kokoro}
+      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en-q5_1.bin}
+      - VAD_MODEL_PATH=${VAD_MODEL_PATH:-/models/vad/silero_vad_op18_ifless.onnx}
       - KOKORO_HOST=${KOKORO_HOST:-kokoro}
       - KOKORO_PORT=${KOKORO_PORT:-8880}
       - KOKORO_VOICE=${KOKORO_VOICE:-af_bella}
@@ -229,10 +140,12 @@ services:
       - STT_CHUNK_MS=${STT_CHUNK_MS:-1200}
       - STT_CHUNK_OVERLAP_MS=${STT_CHUNK_OVERLAP_MS:-200}
       - STT_REALTIME_CHUNK_MS=${STT_REALTIME_CHUNK_MS:-1000}
+      - STT_REALTIME_SPLIT=${STT_REALTIME_SPLIT:-false}
+      - STT_REALTIME_SPLIT_THRESHOLD_MS=${STT_REALTIME_SPLIT_THRESHOLD_MS:-15000}
       - STT_SILENCE_MS=${STT_SILENCE_MS:-500}
       - STT_VAD_SILENCE_RMS=${STT_VAD_SILENCE_RMS:-0.005}
       - STT_MAX_CONCURRENT=${STT_MAX_CONCURRENT:-3}
-      - ASSISTANT_SPEECH_GUARD_MS=${ASSISTANT_SPEECH_GUARD_MS:-800}
+      - ASSISTANT_SPEECH_GUARD_MS=${ASSISTANT_SPEECH_GUARD_MS:-350}
       - MAX_CALL_DURATION_MS=${MAX_CALL_DURATION_MS:-600000}
       - MAX_CONVERSATION_TURNS=${MAX_CONVERSATION_TURNS:-30}
       - MAX_RUNTIME_RAM_GB=${MAX_RUNTIME_RAM_GB:-14}
@@ -241,12 +154,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      tts:
+      kokoro:
         condition: service_healthy
+      whisper:
+        condition: service_healthy
+    volumes:
+      - ./models/vad:/models/vad:ro
     deploy:
       resources:
         limits:
           memory: 256M
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     networks:
       - healthcare_network
 
@@ -264,42 +184,30 @@ services:
       - DB_PORT=${DB_PORT:-5432}
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
-      - LLM_CHAT_PROVIDER=${LLM_CHAT_PROVIDER:-}
-      - LLM_REALTIME_PROVIDER=${LLM_REALTIME_PROVIDER:-}
-      - LLM_DECISION_PROVIDER=${LLM_DECISION_PROVIDER:-}
-      - LLM_ANALYSIS_PROVIDER=${LLM_ANALYSIS_PROVIDER:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_MODEL_CHAT=${GEMINI_MODEL_CHAT:-gemini-2.5-flash}
-      - GEMINI_MODEL_ANALYSIS=${GEMINI_MODEL_ANALYSIS:-gemini-2.5-flash}
-      - GEMINI_MODEL_DECISION=${GEMINI_MODEL_DECISION:-gemini-2.5-flash}
-      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
-      - OLLAMA_MODEL_CHAT=${OLLAMA_MODEL_CHAT:-llama3.2:3b}
-      - OLLAMA_MODEL_DECISION=${OLLAMA_MODEL_DECISION:-llama3.2:3b}
-      - OLLAMA_MODEL_ANALYSIS=${OLLAMA_MODEL_ANALYSIS:-qwen3:8b}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-150}
-      - LLM_NUM_CTX=${LLM_NUM_CTX:-1024}
-      - LLM_NUM_CTX_REALTIME=${LLM_NUM_CTX_REALTIME:-1024}
-      - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS:-768}
-      - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS:-4096}
-      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-30000}
-      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-30000}
-      - LLM_ANALYSIS_TIMEOUT_MS=${LLM_ANALYSIS_TIMEOUT_MS:-120000}
-      - LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS=${LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS:-18000}
+      - LLM_PROVIDER=openrouter
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_URL=${OPENROUTER_URL:-https://openrouter.ai/api/v1}
+      - OPENROUTER_HTTP_REFERER=${OPENROUTER_HTTP_REFERER:-http://localhost:3000}
+      - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-Care Outreach Assistant}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/free}
+      - OPENROUTER_MODEL_CHAT=${OPENROUTER_MODEL_CHAT:-}
+      - OPENROUTER_MODEL_REALTIME=${OPENROUTER_MODEL_REALTIME:-}
+      - OPENROUTER_MODEL_DECISION=${OPENROUTER_MODEL_DECISION:-}
+      - OPENROUTER_MODEL_ANALYSIS=${OPENROUTER_MODEL_ANALYSIS:-}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-15000}
+      - LLM_MAX_RETRIES=${LLM_MAX_RETRIES:-1}
+      - LLM_RETRY_DELAY_MS=${LLM_RETRY_DELAY_MS:-800}
+      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-8000}
+      - LLM_REALTIME_MAX_RETRIES=${LLM_REALTIME_MAX_RETRIES:-0}
+      - LLM_FAILURE_HANDOFF=${LLM_FAILURE_HANDOFF:-true}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-1}
       - CALL_SPACING_MS=${CALL_SPACING_MS:-15000}
       - WEBSOCKET_CALL_MAX_WAIT_MS=${WEBSOCKET_CALL_MAX_WAIT_MS:-720000}
       - POST_CALL_ANALYSIS_MAX_WAIT_MS=${POST_CALL_ANALYSIS_MAX_WAIT_MS:-90000}
       - WHISPER_HOST=${WHISPER_HOST:-whisper}
       - WHISPER_PORT=${WHISPER_PORT:-9000}
-      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en.bin}
-      - STT_PROVIDER=${STT_PROVIDER:-whisper}
-      - MOONSHINE_HOST=${MOONSHINE_HOST:-moonshine}
-      - MOONSHINE_PORT=${MOONSHINE_PORT:-9001}
-      - MOONSHINE_MODEL=${MOONSHINE_MODEL:-moonshine/base}
-      - TTS_HOST=${TTS_HOST:-tts}
-      - TTS_PORT=${TTS_PORT:-5002}
-      - TTS_PROVIDER=${TTS_PROVIDER:-kokoro}
+      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en-q5_1.bin}
+      - VAD_MODEL_PATH=${VAD_MODEL_PATH:-/models/vad/silero_vad_op18_ifless.onnx}
       - KOKORO_HOST=${KOKORO_HOST:-kokoro}
       - KOKORO_PORT=${KOKORO_PORT:-8880}
       - KOKORO_VOICE=${KOKORO_VOICE:-af_bella}
@@ -307,6 +215,8 @@ services:
       - REQUIRE_SERVER_TTS=${REQUIRE_SERVER_TTS:-true}
       - STT_CHUNK_MS=${STT_CHUNK_MS:-1200}
       - STT_CHUNK_OVERLAP_MS=${STT_CHUNK_OVERLAP_MS:-200}
+      - STT_REALTIME_SPLIT=${STT_REALTIME_SPLIT:-false}
+      - STT_REALTIME_SPLIT_THRESHOLD_MS=${STT_REALTIME_SPLIT_THRESHOLD_MS:-15000}
       - STT_SILENCE_MS=${STT_SILENCE_MS:-500}
       - STT_VAD_SILENCE_RMS=${STT_VAD_SILENCE_RMS:-0.005}
       - STT_MAX_CONCURRENT=${STT_MAX_CONCURRENT:-3}
@@ -316,12 +226,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      whisper:
+        condition: service_healthy
     volumes:
       - ./ai/sample_audio:/sample_audio
+      - ./models/vad:/models/vad:ro
     deploy:
       resources:
         limits:
           memory: 256M
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     networks:
       - healthcare_network
 
@@ -338,9 +254,9 @@ services:
       - VITE_REQUIRE_SERVER_TTS=${VITE_REQUIRE_SERVER_TTS:-true}
       - VITE_VAD_SPEECH_THRESHOLD=${VITE_VAD_SPEECH_THRESHOLD:-0.007}
       - VITE_VAD_SILENCE_THRESHOLD=${VITE_VAD_SILENCE_THRESHOLD:-0.0035}
-      - VITE_VAD_MIN_SPEECH_MS=${VITE_VAD_MIN_SPEECH_MS:-450}
-      - VITE_VAD_END_SILENCE_MS=${VITE_VAD_END_SILENCE_MS:-1000}
-      - VITE_VAD_MAX_UTTERANCE_MS=${VITE_VAD_MAX_UTTERANCE_MS:-12000}
+      - VITE_VAD_MIN_SPEECH_MS=${VITE_VAD_MIN_SPEECH_MS:-300}
+      - VITE_VAD_END_SILENCE_MS=${VITE_VAD_END_SILENCE_MS:-650}
+      - VITE_VAD_MAX_UTTERANCE_MS=${VITE_VAD_MAX_UTTERANCE_MS:-8000}
     depends_on:
       - backend
     deploy:
@@ -352,7 +268,6 @@ services:
 
 volumes:
   postgres_data:
-  ollama_data:
 
 networks:
   healthcare_network:

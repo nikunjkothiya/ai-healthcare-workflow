@@ -2,7 +2,6 @@ const { Worker } = require('bullmq');
 const Redis = require('ioredis');
 const { Pool } = require('pg');
 const fs = require('fs');
-const axios = require('axios');
 
 require('dotenv').config();
 
@@ -178,34 +177,6 @@ async function waitForWebsocketCallResolution({ patientId, campaignId, startedAt
     callId: lastCallId,
     analysisCompleted: false
   };
-}
-
-/**
- * Wait for Ollama endpoint to be reachable before processing calls.
- * Model-level validation/pull is handled by llmService.checkAvailability().
- */
-async function waitForOllama() {
-  const ollamaUrl = process.env.OLLAMA_URL || 'http://ollama:11434';
-  const maxAttempts = 30;
-  const delayMs = 5000;
-  console.log(`Worker: Checking Ollama endpoint availability at ${ollamaUrl}`);
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await axios.get(`${ollamaUrl}/api/tags`, { timeout: 5000 });
-      console.log('Worker: Ollama endpoint is reachable');
-      return true;
-    } catch (error) {
-      console.log(`Worker: Ollama endpoint not ready (attempt ${attempt}/${maxAttempts}): ${error.message}`);
-    }
-
-    if (attempt < maxAttempts) {
-      await new Promise(resolve => setTimeout(resolve, delayMs));
-    }
-  }
-
-  console.warn('Worker: Ollama endpoint not available after all attempts. Calls requiring LLM may fail until Ollama is healthy.');
-  return false;
 }
 
 // Helper function to extract structured data from call transcript
@@ -814,23 +785,12 @@ async function processPatientCall(patientId, jobData = {}) {
 }
 
 function resolveStageProvidersFromEnv() {
-  const normalize = (value, fallback = 'gemini') => {
-    const normalized = String(value || '').trim().toLowerCase();
-    return normalized === 'ollama' || normalized === 'gemini' ? normalized : fallback;
-  };
-
-  const defaultProvider = normalize(process.env.LLM_PROVIDER || 'gemini');
-  const chatProvider = normalize(process.env.LLM_CHAT_PROVIDER || defaultProvider, defaultProvider);
-  const realtimeProvider = normalize(process.env.LLM_REALTIME_PROVIDER || chatProvider, chatProvider);
-  const decisionProvider = normalize(process.env.LLM_DECISION_PROVIDER || chatProvider, chatProvider);
-  const analysisProvider = normalize(process.env.LLM_ANALYSIS_PROVIDER || defaultProvider, defaultProvider);
-
   return {
-    defaultProvider,
-    chatProvider,
-    realtimeProvider,
-    decisionProvider,
-    analysisProvider
+    defaultProvider: 'openrouter',
+    chatProvider: 'openrouter',
+    realtimeProvider: 'openrouter',
+    decisionProvider: 'openrouter',
+    analysisProvider: 'openrouter'
   };
 }
 
@@ -846,20 +806,11 @@ async function startWorker() {
     console.error('EventBus init failed:', err.message);
   }
 
-  // Wait for every configured LLM stage provider to be ready.
+  // Wait for OpenRouter LLM configuration to be ready.
   const stageProviders = resolveStageProvidersFromEnv();
-  const enabledProviders = new Set(Object.values(stageProviders));
-  const usesOllama = enabledProviders.has('ollama');
 
   while (true) {
-    let llmReady = false;
-
-    if (usesOllama) {
-      const ollamaReady = await waitForOllama();
-      llmReady = ollamaReady ? await llmService.checkAvailability() : false;
-    } else {
-      llmReady = await llmService.checkAvailability();
-    }
+    const llmReady = await llmService.checkAvailability();
 
     if (llmReady) {
       break;

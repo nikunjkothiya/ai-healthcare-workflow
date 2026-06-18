@@ -42,13 +42,11 @@ class PostCallPipeline {
             }
           });
         } catch (modelError) {
-          // Do not hard-fail the entire call if the model returns malformed JSON.
-          // Fall back to a heuristic, transcript-based result so dashboards still work.
           console.warn(
-            `Post-call strict analysis failed for call ${callId}, falling back to heuristic result:`,
+            `Post-call strict analysis failed for call ${callId}; marking for manual review:`,
             modelError.message
           );
-          strictAnalysis = this.buildInsufficientDataResult(transcript);
+          strictAnalysis = this.buildAnalysisFailedResult(transcript, modelError, context);
         }
       }
 
@@ -184,6 +182,90 @@ class PostCallPipeline {
     };
   }
 
+  extractPatientText(transcript) {
+    return String(transcript || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^patient\s*:/i.test(line))
+      .map((line) => line.replace(/^patient\s*:\s*/i, '').trim())
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  inferEvidenceSignals(transcript, context = {}) {
+    const fullText = String(transcript || '').toLowerCase().replace(/\s+/g, ' ');
+    const patientText = this.extractPatientText(transcript).toLowerCase();
+    const campaignType = String(context.campaign?.campaign_type || '').toLowerCase();
+    const campaignScript = String(context.campaign?.script_template || '').toLowerCase();
+    const isAppointmentCampaign = campaignType === 'appointment_confirmation' ||
+      /\b(appointment|confirm|schedule)\b/.test(campaignScript);
+
+    const patientAvailable = /\b(yes|sure|okay|ok|good time|i can talk|go ahead)\b/.test(patientText) &&
+      /\b(good time|moment|talk|speak)\b/.test(fullText);
+    const requestedCallback = /\b(call back|callback|later|another time|not now|busy)\b/.test(patientText);
+    const appointmentConfirmed = isAppointmentCampaign &&
+      /\b(yes|confirm|confirmed|correct|that works|sounds good|i can make it|i will be there|i'll be there)\b/.test(patientText) &&
+      /\b(appointment|visit|scheduled|doctor|date|time)\b/.test(fullText);
+
+    const concerns = [];
+    if (/\b(pain|chest pain|shortness of breath|dizzy|bleeding|emergency)\b/.test(patientText)) {
+      concerns.push('Patient may have reported a clinical concern; review transcript before action.');
+    }
+
+    let barrierType = 'none';
+    if (/\b(afford|expensive|cost|money|insurance|pay)\b/.test(patientText)) barrierType = 'financial';
+    else if (/\b(ride|transport|bus|no car|drive)\b/.test(patientText)) barrierType = 'transportation';
+    else if (/\b(schedule conflict|work|busy|not a good time)\b/.test(patientText)) barrierType = 'scheduling';
+    else if (/\b(language|translator|english)\b/.test(patientText)) barrierType = 'language';
+
+    let sentiment = 'neutral';
+    if (/\b(thank you|thanks|yes|sure|good time|sounds good)\b/.test(patientText)) sentiment = 'positive';
+    if (/\b(upset|angry|bad|complaint|not happy|worried|concerned)\b/.test(patientText)) sentiment = 'negative';
+
+    return { patientText, patientAvailable, requestedCallback, appointmentConfirmed, concerns, barrierType, sentiment };
+  }
+
+  buildAnalysisFailedResult(transcript, error, context = {}) {
+    const compact = String(transcript || '').replace(/\s+/g, ' ').trim();
+    const signals = this.inferEvidenceSignals(transcript, context);
+    const patientExcerpt = signals.patientText ? signals.patientText.slice(0, 180) : '';
+    const summary = signals.patientAvailable
+      ? 'Patient answered and said it was a good time to talk. The assistant could not complete the conversation because the AI service was unavailable.'
+      : patientExcerpt
+        ? `Patient response captured: "${patientExcerpt}". The assistant could not complete the conversation because the AI service was unavailable.`
+        : compact
+          ? `Call transcript was captured, but the AI service was unavailable before a reliable outcome could be completed.`
+          : 'No reliable conversation transcript was captured.';
+
+    const followupReason = `AI service unavailable during automated analysis: ${error.message}`;
+    const riskFlags = ['model_unavailable'];
+    if (signals.concerns.length > 0) riskFlags.push('possible_patient_concern');
+
+    return {
+      summary,
+      campaign_goal_achieved: Boolean(signals.appointmentConfirmed),
+      appointment_confirmed: Boolean(signals.appointmentConfirmed),
+      confirmed_date: null,
+      confirmed_time: null,
+      sentiment: signals.sentiment,
+      risk_level: signals.concerns.length > 0 ? 'medium' : 'low',
+      risk_flags: riskFlags,
+      requires_manual_followup: true,
+      followup_reason: followupReason,
+      priority: signals.concerns.length > 0 ? 'high' : 'medium',
+      analysis_status: 'model_unavailable_review_required',
+      action_items: [
+        'Review this call before marking outreach complete.',
+        signals.requestedCallback ? 'Call patient back at a suitable time.' : 'Care team follow-up needed because the automated call could not finish.'
+      ],
+      urgency: signals.concerns.length > 0 ? 'urgent' : 'needs_attention',
+      patient_concerns: signals.concerns,
+      barrier_type: signals.barrierType
+    };
+  }
+
   mapAnalysisToResult(strict, transcript) {
     // Consistency fix: if campaign goal achieved and transcript has confirmation
     // phrases, override appointment_confirmed to true
@@ -205,7 +287,7 @@ class PostCallPipeline {
 
     const requestedCallback = requiresManualFollowup;
     const requiresFollowup = Boolean(requiresManualFollowup || strict.risk_level === 'high');
-    const analysisStatus = transcript.length < this.minTranscriptLength ? 'insufficient_data' : 'completed';
+    const analysisStatus = strict.analysis_status || (transcript.length < this.minTranscriptLength ? 'insufficient_data' : 'completed');
 
     // Determine analysis model identifier for tracking
     const analysisModelId = llmService.getAnalysisModelIdentifier();

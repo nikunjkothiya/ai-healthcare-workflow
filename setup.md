@@ -35,8 +35,8 @@ All large AI model files live in the `models/` directory. Each subfolder has its
 Model assets are not committed to git in this project.
 Only `README.md` files are tracked under `models/`, so each user must place model files locally in the correct folders.
 
-> **Note:** When using Gemini API as the LLM provider (default), you do NOT need any Ollama model files.
-> Only Whisper and TTS model files are required.
+> **Note:** OpenRouter is the only LLM provider for this setup.
+> Only the Whisper and Silero VAD local model files are required; Kokoro TTS runs from its Docker image.
 
 > **IMPORTANT — Host vs Container paths:**
 > The `.env` file uses **container paths** (inside Docker), not host paths.
@@ -45,80 +45,61 @@ Only `README.md` files are tracked under `models/`, so each user must place mode
 > | Host Directory      | Container Mount Point |       Used By     |
 > |---------------------|-----------------------|-------------------|
 > | `./models/whisper/` |   `/models/whisper/`  | Whisper container |
-> | `./models/ollama/`  |   `/models/ollama/`   | Ollama container  |
-> | `./models/tts/`     |   `/models/tts/`      | TTS container     |
+> | `./models/vad/`     |   `/models/vad/`      | Backend/worker    |
 >
-> So `WHISPER_MODEL_PATH=/models/whisper/ggml-small.en.bin` in `.env` maps to `./models/whisper/ggml-small.en.bin` on your machine.
+> So `WHISPER_MODEL_PATH=/models/whisper/ggml-small.en-q5_1.bin` in `.env` maps to `./models/whisper/ggml-small.en-q5_1.bin` on your machine.
 
 ### A. Whisper (Speech-to-Text)
 
 See: [`models/whisper/README.md`](./models/whisper/README.md)
 
 ```bash
-# Download the model (~466MB)
-wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin \
-  -O models/whisper/ggml-small.en.bin
+# Download the recommended low-hardware model (~181MB)
+wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin \
+  -O models/whisper/ggml-small.en-q5_1.bin
 ```
 
-Verify `.env` has: `WHISPER_MODEL_PATH=/models/whisper/ggml-small.en.bin`
+Verify `.env` has: `WHISPER_MODEL_PATH=/models/whisper/ggml-small.en-q5_1.bin`
 
-### B. Coqui TTS (Text-to-Speech)
+### A1. Silero VAD Model
 
-See: [`models/tts/README.md`](./models/tts/README.md)
+See: [`models/vad/README.md`](./models/vad/README.md)
 
-Place the Coqui model files directly in `models/tts/` (no auto-download in container):
 ```bash
-# Required files
-models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar
-models/tts/tts_models--en--ljspeech--tacotron2-DDC/config.json
-models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file.pth.tar
-models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json
+wget https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad_op18_ifless.onnx \
+  -O models/vad/silero_vad_op18_ifless.onnx
 ```
 
-Verify `.env` has:
+Verify `.env` has: `VAD_MODEL_PATH=/models/vad/silero_vad_op18_ifless.onnx`
+
+### B. Kokoro TTS (Text-to-Speech)
+
+Kokoro is the default low-hardware TTS provider. Verify `.env` has:
 ```bash
-TTS_MODEL_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar
-TTS_CONFIG_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/config.json
-TTS_VOCODER_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file.pth.tar
-TTS_VOCODER_CONFIG_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json
+KOKORO_HOST=kokoro
+KOKORO_PORT=8880
+KOKORO_VOICE=af_bella
+KOKORO_LANG=en-us
 ```
 
-### C. LLM — Gemini API (Primary, Default)
+Docker pulls the pinned public CPU image `ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.2`.
+
+### C. LLM — OpenRouter API (Primary, Default)
 
 Set in `.env`:
 ```bash
-LLM_PROVIDER=gemini
-GEMINI_API_KEY=your_real_api_key_here
-GEMINI_MODEL_CHAT=gemini-2.0-flash
-GEMINI_MODEL_ANALYSIS=gemini-2.0-flash
-GEMINI_MODEL_DECISION=gemini-2.0-flash
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=your_real_openrouter_key_here
+OPENROUTER_MODEL=openrouter/free
+OPENROUTER_HTTP_REFERER=http://localhost:3000
+OPENROUTER_APP_TITLE=Care Outreach Assistant
 ```
 
-No local model files needed — all LLM inference runs via the Gemini API.
-Get your API key from [Google AI Studio](https://aistudio.google.com/apikey).
+No local LLM model files needed — all LLM inference runs via OpenRouter's OpenAI-compatible chat completions API. The default `openrouter/free` slug routes requests to currently available free model variants.
+`OPENROUTER_HTTP_REFERER` is an OpenRouter attribution header, not a backend routing URL. Keep `http://localhost:3000` for local Docker, and use your deployed frontend URL in production.
+For healthcare validation, test and pin an explicit `:free` model when possible because `openrouter/free` is a no-cost router, not a fixed model.
+Get your API key from [OpenRouter](https://openrouter.ai/keys).
 
-### D. LLM — Ollama (Optional Fallback)
-
-To use local models instead of Gemini, set `LLM_PROVIDER=ollama` in `.env`.
-
-Place GGUF files in `models/ollama/`:
-```bash
-models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
-models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
-```
-
-Verify `.env` has matching model file paths:
-```bash
-LLM_PROVIDER=ollama
-OLLAMA_URL=http://ollama:11434
-OLLAMA_MODEL_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_CHAT_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_ANALYSIS_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_DECISION_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
-```
-Start with `docker compose --profile ollama up -d` to include the Ollama container.
-Internal tags are fixed in code/startup script: `healthcare-base`, `healthcare-chat`, `healthcare-analysis`, `healthcare-decision`.
-On every Ollama container start, these tags are refreshed from `OLLAMA_MODEL*_PATH` files.
 ---
 
 ## 4. First-Time Start
@@ -133,7 +114,6 @@ docker ps
 ```
 
 You should see 7 containers: `frontend`, `backend`, `worker`, `postgres`, `redis`, `whisper`, `tts` — all `Up (healthy)`.
-(If using Ollama: 8 containers including `ollama`)
 
 - **Dashboard**: [http://localhost:3000](http://localhost:3000)
 - **API**: [http://localhost:4000](http://localhost:4000)
@@ -163,12 +143,11 @@ docker compose up -d backend
 docker compose up -d
 ```
 
-### You swapped a model file
+### You swapped a local STT/TTS model file
 ```bash
 # Models are mounted volumes — just restart the service
 docker compose restart whisper    # After changing whisper model
 docker compose restart tts        # After changing TTS model
-docker compose restart ollama backend worker  # After changing Ollama model paths in .env
 ```
 
 ### Full rebuild from scratch
@@ -193,7 +172,7 @@ docker logs -f healthcare_worker
 docker logs -f healthcare_whisper
 
 # TTS (voice synthesis)
-docker logs -f healthcare_tts
+docker logs -f healthcare_kokoro
 ```
 
 ---
@@ -216,13 +195,10 @@ VERIFY_CALL_MODE=websocket ./verify.sh
 AI-Caller-Healthcare/
 |-- models/                    # AI model files (mounted into containers)
 |   |-- whisper/               # Whisper GGML models -> mounted at /models/whisper/
-|   |   |-- ggml-small.en.bin
+|   |   |-- ggml-small.en-q5_1.bin
 |   |   `-- README.md
-|   |-- ollama/                # Ollama GGUF models -> mounted at /models/ollama/
-|   |   `-- README.md
-|   |-- tts/                   # Coqui TTS models -> mounted at /models/tts/
-|   |   |-- tts_models--en--ljspeech--tacotron2-DDC/
-|   |   |-- vocoder_models--en--ljspeech--hifigan_v2/
+|   |-- vad/                   # Silero VAD ONNX model -> mounted at /models/vad/
+|   |   |-- silero_vad_op18_ifless.onnx
 |   |   `-- README.md
 |   `-- README.md
 |-- ai/whisper/Dockerfile      # Whisper container build file

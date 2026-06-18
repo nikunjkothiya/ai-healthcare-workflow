@@ -38,75 +38,12 @@ section() {
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
-normalize_model_name() {
-    echo "$1" | tr '[:upper:]' '[:lower:]' | xargs
-}
-
-get_available_model_names() {
-    local tags_json="$1"
-    echo "$tags_json" \
-      | grep -oE '"(name|model)":"[^"]+"' \
-      | sed -E 's/"(name|model)":"([^"]+)"/\2/' \
-      | tr '[:upper:]' '[:lower:]' \
-      | sort -u
-}
-
-model_exists_in_ollama() {
-    local required_model
-    required_model=$(normalize_model_name "$1")
-    local tags_json="$2"
-
-    if [ -z "$required_model" ]; then
-        return 1
-    fi
-
-    local available_model
-    while IFS= read -r available_model; do
-        [ -z "$available_model" ] && continue
-        if [ "$available_model" = "$required_model" ]; then
-            return 0
-        fi
-        if [[ "$available_model" == "$required_model"* ]]; then
-            return 0
-        fi
-        if [[ "$required_model" == "$available_model"* ]]; then
-            return 0
-        fi
-    done < <(get_available_model_names "$tags_json")
-
-    return 1
-}
-
 get_env_value() {
     local key="$1"
     if [ ! -f .env ]; then
         return
     fi
     grep -E "^${key}=" .env | tail -n 1 | cut -d '=' -f2- | tr -d '\r' | xargs
-}
-
-resolve_stage_provider() {
-    local key="$1"
-    local fallback="$2"
-    local value
-    value=$(get_env_value "$key")
-    if [ -z "$value" ]; then
-        echo "$fallback"
-        return
-    fi
-    echo "$value"
-}
-
-uses_provider() {
-    local target="$1"
-    shift
-    local provider
-    for provider in "$@"; do
-        if [ "$provider" = "$target" ]; then
-            return 0
-        fi
-    done
-    return 1
 }
 
 # Configuration
@@ -129,30 +66,7 @@ echo "=========================================="
 echo "Mode: $VERIFY_CALL_MODE"
 echo ""
 
-# Detect LLM routing from .env
-LLM_PROVIDER="gemini"
-if [ -f .env ]; then
-    ENV_PROVIDER=$(get_env_value "LLM_PROVIDER")
-    if [ -n "$ENV_PROVIDER" ]; then
-        LLM_PROVIDER="$ENV_PROVIDER"
-    fi
-fi
-LLM_CHAT_PROVIDER=$(resolve_stage_provider "LLM_CHAT_PROVIDER" "$LLM_PROVIDER")
-LLM_REALTIME_PROVIDER=$(resolve_stage_provider "LLM_REALTIME_PROVIDER" "$LLM_CHAT_PROVIDER")
-LLM_DECISION_PROVIDER=$(resolve_stage_provider "LLM_DECISION_PROVIDER" "$LLM_CHAT_PROVIDER")
-LLM_ANALYSIS_PROVIDER=$(resolve_stage_provider "LLM_ANALYSIS_PROVIDER" "$LLM_PROVIDER")
-
-USES_OLLAMA=false
-if uses_provider "ollama" "$LLM_PROVIDER" "$LLM_CHAT_PROVIDER" "$LLM_REALTIME_PROVIDER" "$LLM_DECISION_PROVIDER" "$LLM_ANALYSIS_PROVIDER"; then
-    USES_OLLAMA=true
-fi
-
-USES_GEMINI=false
-if uses_provider "gemini" "$LLM_PROVIDER" "$LLM_CHAT_PROVIDER" "$LLM_REALTIME_PROVIDER" "$LLM_DECISION_PROVIDER" "$LLM_ANALYSIS_PROVIDER"; then
-    USES_GEMINI=true
-fi
-
-echo "LLM Routing: chat=$LLM_CHAT_PROVIDER, realtime=$LLM_REALTIME_PROVIDER, decision=$LLM_DECISION_PROVIDER, analysis=$LLM_ANALYSIS_PROVIDER"
+echo "LLM Routing: OpenRouter only"
 echo ""
 
 # Check if jq is installed
@@ -170,11 +84,7 @@ section "LAYER 1: Infrastructure & Services"
 
 info "Checking Docker services..."
 
-# Build service list based on active stage routing
-SERVICES=("healthcare_db" "healthcare_redis" "healthcare_backend" "healthcare_worker" "healthcare_frontend" "healthcare_whisper" "healthcare_tts")
-if [ "$USES_OLLAMA" = "true" ]; then
-    SERVICES+=("healthcare_ollama")
-fi
+SERVICES=("healthcare_db" "healthcare_redis" "healthcare_backend" "healthcare_worker" "healthcare_frontend" "healthcare_whisper" "healthcare_kokoro")
 
 for service in "${SERVICES[@]}"; do
     if docker ps | grep -q "$service"; then
@@ -208,37 +118,11 @@ else
     error "Redis connection failed"
 fi
 
-# Check LLM Service
-if [ "$USES_OLLAMA" = "true" ]; then
-    # Check Ollama
-    info "Testing Ollama service..."
-    if curl -s -f "http://localhost:11434/api/tags" > /dev/null 2>&1; then
-        success "Ollama is ready"
-    else
-        error "Ollama connection failed"
-    fi
-
-    # Check registered Ollama model tags
-    info "Checking required Ollama model tag(s)..."
-    TAGS_JSON=$(curl -s "http://localhost:11434/api/tags")
-    REQUIRED_MODELS=("healthcare-base" "healthcare-chat" "healthcare-analysis" "healthcare-decision")
-
-    for model_name in "${REQUIRED_MODELS[@]}"; do
-        if model_exists_in_ollama "$model_name" "$TAGS_JSON"; then
-            success "Ollama model available: $model_name"
-        else
-            error "Missing Ollama model: $model_name"
-        fi
-    done
+OPENROUTER_API_KEY=$(get_env_value "OPENROUTER_API_KEY")
+if [ -n "$OPENROUTER_API_KEY" ] && [ "$OPENROUTER_API_KEY" != "YOUR_OPENROUTER_API_KEY_HERE" ]; then
+    success "OpenRouter LLM provider configured"
 else
-    info "No stage uses Ollama (skipping Ollama checks)"
-fi
-
-if [ "$USES_GEMINI" = "true" ]; then
-    info "Gemini-backed stage(s) configured"
-    success "Gemini LLM provider configured"
-else
-    info "No stage uses Gemini API"
+    error "OpenRouter API key missing in .env"
 fi
 
 # ============================================

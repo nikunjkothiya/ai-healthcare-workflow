@@ -3,7 +3,7 @@
 Place your Whisper GGML model files in this directory.
 
 ## Current Model
-- `ggml-small.en.bin` - English small model (~466MB)
+- `ggml-small.en-q5_1.bin` - English small quantized model (~181MB), recommended for low-hardware live calls.
 
 ## How It Works
 
@@ -12,7 +12,7 @@ This folder is mounted into the Whisper Docker container via `docker-compose.yml
 Host path:      ./models/whisper/          ->  Container path: /models/whisper/
 ```
 
-So when `.env` says `WHISPER_MODEL_PATH=/models/whisper/ggml-small.en.bin`, it reads from this folder.
+So when `.env` says `WHISPER_MODEL_PATH=/models/whisper/ggml-small.en-q5_1.bin`, it reads from this folder.
 
 At runtime, the STT pipeline is optimized for live calls:
 - The browser (`MobileCall` component) runs a lightweight VAD and only sends buffered utterances (not raw continuous audio) as WAV `audio_chunk`s over WebSocket.
@@ -26,10 +26,10 @@ Whisper model binaries (`*.bin`) are git-ignored and must be provided locally by
 ## How to Download
 
 ```bash
-# Option 1: wget from HuggingFace
-wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin -O models/whisper/ggml-small.en.bin
+# Recommended low-hardware model
+wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin -O models/whisper/ggml-small.en-q5_1.bin
 
-# Option 2: Using whisper.cpp download script
+# Alternative unquantized model using whisper.cpp download script
 bash ai/whisper/download-model.sh small.en
 mv ai/whisper/models/ggml-small.en.bin models/whisper/
 ```
@@ -39,8 +39,9 @@ mv ai/whisper/models/ggml-small.en.bin models/whisper/
 | Model | Size | Speed | Accuracy |
 |-------|------|-------|----------|
 | `ggml-tiny.en.bin` | 75MB | Fastest | Low |
-| `ggml-base.en.bin` | 142MB | Fast | Medium |
-| `ggml-small.en.bin` | 466MB | Medium | **Good (recommended)** |
+| `ggml-base.en-q5_1.bin` | ~57MB | Fast | Medium |
+| `ggml-small.en-q5_1.bin` | ~181MB | Medium | **Good balance (recommended)** |
+| `ggml-small.en.bin` | 466MB | Medium-slow | Good |
 | `ggml-medium.en.bin` | 1.5GB | Slow | Best |
 
 ## After Swapping

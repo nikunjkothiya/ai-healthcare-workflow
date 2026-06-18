@@ -2,24 +2,8 @@ const axios = require('axios');
 const fs = require('fs');
 
 /**
- * Kokoro-82M TTS Service — #1 on TTS Arena, only 82M parameters.
- * 
- * Key advantages over Tacotron2 (current):
- * - 82M params vs 28M (Tacotron2) + 14M (HiFiGAN) = 42M combined
- * - But: significantly higher quality (ranks above XTTS 467M, MetaVoice 1.2B)
- * - Apache 2.0 license (fully permissive)
- * - 50+ built-in voices
- * - Faster inference on CPU
- * - Natural prosody and emotion
- * 
- * Voice packs (Kokoro v0.19+):
- * - af_bella, af_sarah, af_sky       (American female)
- * - am_adam, am_michael              (American male)
- * - bf_emma, bf_isabella             (British female)
- * - bm_george, bm_lewis              (British male)
- * 
- * Server: Kokoro-FastAPI (Docker) or direct ONNX inference
- * Model: hexgrad/Kokoro-82M on Hugging Face
+ * Kokoro-82M TTS service.
+ * This is the only server-side TTS provider used by the application.
  */
 class KokoroService {
   constructor() {
@@ -28,7 +12,6 @@ class KokoroService {
     this.baseUrl = `http://${this.host}:${this.port}`;
     this.voice = process.env.KOKORO_VOICE || 'af_bella';
     this.lang = process.env.KOKORO_LANG || 'en-us';
-    this.enabled = String(process.env.TTS_PROVIDER || 'kokoro').toLowerCase() === 'kokoro';
     
     // Simple in-memory cache for common phrases
     this.cache = new Map();
@@ -42,10 +25,6 @@ class KokoroService {
    * @returns {Promise<string>} - Path to output file
    */
   async synthesize(text, outputPath) {
-    if (!this.enabled) {
-      throw new Error('Kokoro TTS is not enabled. Set TTS_PROVIDER=kokoro');
-    }
-
     const startedAt = Date.now();
     const text_clean = String(text || '').trim();
     if (!text_clean) {

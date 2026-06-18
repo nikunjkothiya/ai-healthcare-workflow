@@ -1,4 +1,4 @@
-# 🏥 AI Healthcare Voice Agent - User Guide
+# Care Outreach Assistant - User Guide
 
 Complete guide for using the system across different roles: Hospital Staff, Campaign Manager, Care Coordinator, QA Tester, and System Administrator.
 
@@ -775,8 +775,8 @@ docker exec healthcare_db pg_isready
 # Check Redis
 docker exec healthcare_redis redis-cli PING
 
-# Check Ollama
-curl http://localhost:11434/api/tags
+# Check OpenRouter key is configured
+test -n "$OPENROUTER_API_KEY" && echo "openrouter key configured"
 ```
 
 #### 2. Monitor Logs
@@ -1010,11 +1010,11 @@ docker logs -f healthcare_worker
 # Check queue
 docker exec healthcare_redis redis-cli KEYS "*"
 
-# Check Ollama
-curl http://localhost:11434/api/tags
+# Check OpenRouter/LLM logs
+docker logs healthcare_backend | grep -i "OpenRouter"
 
-# Restart worker + Ollama service
-docker compose restart ollama worker
+# Restart backend + worker
+docker compose restart backend worker
 ```
 
 ### Issue: No transcripts
@@ -1044,8 +1044,8 @@ docker compose restart whisper backend worker
 # Check resource usage
 docker stats
 
-# Check Ollama model
-docker exec healthcare_ollama ollama list
+# Check OpenRouter/LLM logs
+docker logs healthcare_backend | grep -i "OpenRouter"
 
 # Scale workers
 docker compose up --scale worker=3 -d
@@ -1074,11 +1074,12 @@ docker compose down -v
 # Start fresh
 docker compose up -d
 
-# Ensure local Ollama GGUF files exist and .env paths are correct
-ls models/ollama
+# Ensure local STT/VAD model files exist
+ls models/whisper/ggml-small.en-q5_1.bin
+ls models/vad/silero_vad_op18_ifless.onnx
 
-# Re-register models inside Ollama container
-docker compose restart ollama backend worker
+# Restart AI path
+docker compose restart whisper kokoro backend worker
 
 # Wait for services
 sleep 60
@@ -1282,16 +1283,17 @@ Solution:
 
 **Issue: No AI Response**
 
-Check Ollama:
+Check OpenRouter and worker logs:
 ```bash
-curl http://localhost:11434/api/tags
+docker logs healthcare_backend | grep -i "OpenRouter"
 docker logs healthcare_worker --tail 50
 ```
 
 Solution:
-- Verify Ollama container is running: `docker compose ps ollama`
-- Check configured model(s) are loaded: `docker exec healthcare_ollama ollama list`
-- Restart worker: `docker compose restart worker`
+- Verify `OPENROUTER_API_KEY` is set in `.env`
+- Verify `OPENROUTER_MODEL` is configured
+- Verify Docker can reach OpenRouter: `docker compose exec backend getent hosts openrouter.ai`
+- Restart backend and worker: `docker compose restart backend worker`
 
 **Issue: Post-Call Analysis Not Completing**
 
@@ -1302,7 +1304,7 @@ docker logs healthcare_worker | grep "LLM:"
 ```
 
 Solution:
-- Verify Ollama accessible
+- Verify OpenRouter key/model configuration
 - Analysis runs asynchronously (10-30 seconds)
 - Check LLM service logs
 
@@ -1367,8 +1369,8 @@ For issues or questions:
 - ✅ Redis Queue (healthy)
 - ✅ Worker Process (ready)
 - ✅ Whisper STT Service (running)
-- ✅ Coqui TTS Service (running)
-- ✅ Ollama LLM (configured model(s) loaded from `.env`)
+- ✅ Kokoro TTS Service (running)
+- ✅ OpenRouter LLM (API key configured in `.env`)
 
 **Sample Data Available:**
 - 3 test patients (John Smith, Sarah Johnson, Michael Brown)

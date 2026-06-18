@@ -28,6 +28,24 @@ const {
 const agentController = new AgentController();
 let callStartListenerRegistered = false;
 const MAX_CALL_DURATION_MS = parseInt(process.env.MAX_CALL_DURATION_MS, 10) || 10 * 60 * 1000;
+const ASSISTANT_SPEECH_GUARD_MS = parseInt(process.env.ASSISTANT_SPEECH_GUARD_MS, 10) || 350;
+
+async function buildGreetingCache(patientId) {
+  const greetingText = await agentController.getGreeting(patientId);
+  const ttsPath = path.join(AUDIO_TMP_DIR, `pregreet_${patientId}_${Date.now()}.wav`);
+  let audioBase64 = null;
+
+  try {
+    const audioFile = await tryGenerateTTS(greetingText, ttsPath);
+    if (audioFile) {
+      audioBase64 = fs.readFileSync(ttsPath).toString('base64');
+    }
+  } finally {
+    try { if (fs.existsSync(ttsPath)) fs.unlinkSync(ttsPath); } catch (_) {}
+  }
+
+  return { text: greetingText, audioBase64 };
+}
 
 function initWebSocket(server) {
   const wss = new WebSocket.Server({ server, path: '/ws' });
@@ -58,37 +76,30 @@ function initWebSocket(server) {
         }).catch(err => console.error('Ring timeout handler error:', err));
       }, RING_TIMEOUT_MS);
 
-      pendingRings.set(String(targetPatientId), {
+      const ringState = {
         timeoutHandle, campaignId: payload.campaignId || null,
         organizationId: payload.organizationId || null,
         retryAttempt: payload.retryAttempt || 0, maxRetries: payload.maxRetries || 3,
-        greetingText: null, greetingAudioBase64: null, greetingReady: false
-      });
+        greetingText: null, greetingAudioBase64: null, greetingReady: false,
+        greetingPromise: null
+      };
 
-      (async () => {
+      pendingRings.set(String(targetPatientId), ringState);
+
+      ringState.greetingPromise = (async () => {
         try {
-          const greetingText = await agentController.getGreeting(targetPatientId);
+          const cached = await buildGreetingCache(targetPatientId);
           const pending = pendingRings.get(String(targetPatientId));
-          if (!pending) return;
 
-          const ttsPath = path.join(AUDIO_TMP_DIR, `pregreet_${targetPatientId}_${Date.now()}.wav`);
-          const audioFile = await tryGenerateTTS(greetingText, ttsPath);
-          let audioBase64 = null;
-          if (audioFile) {
-            audioBase64 = fs.readFileSync(ttsPath).toString('base64');
-            try { if (fs.existsSync(ttsPath)) fs.unlinkSync(ttsPath); } catch (_) {}
+          if (pending === ringState) {
+            pending.greetingText = cached.text;
+            pending.greetingAudioBase64 = cached.audioBase64;
+            pending.greetingReady = true;
           }
-
-          const stillPending = pendingRings.get(String(targetPatientId));
-          if (stillPending) {
-            stillPending.greetingText = greetingText;
-            stillPending.greetingAudioBase64 = audioBase64;
-            stillPending.greetingReady = true;
-          } else {
-            try { if (fs.existsSync(ttsPath)) fs.unlinkSync(ttsPath); } catch (_) {}
-          }
+          return cached;
         } catch (err) {
           console.warn(`[GREETING-CACHE] Pre-generation failed for patient ${targetPatientId}: ${err.message}`);
+          return null;
         }
       })();
     });
@@ -190,7 +201,7 @@ async function handleStartCall(sessionId, patientId) {
     session.patientId = normalizePatientId(patientId);
 
     const cachedRing = pendingRings.get(String(session.patientId));
-    const cachedGreeting = cachedRing?.greetingReady ? {
+    let cachedGreeting = cachedRing?.greetingReady ? {
       text: cachedRing.greetingText, audioBase64: cachedRing.greetingAudioBase64
     } : null;
 
@@ -237,6 +248,13 @@ async function handleStartCall(sessionId, patientId) {
         ['calling', patientContext.id]);
     }
 
+    if (!cachedGreeting?.text && cachedRing?.greetingPromise) {
+      cachedGreeting = await cachedRing.greetingPromise.catch((err) => {
+        console.warn(`[GREETING-CACHE] Await failed for patient ${session.patientId}: ${err.message}`);
+        return null;
+      });
+    }
+
     let greeting, greetingAudioBase64 = null;
     if (cachedGreeting?.text) {
       greeting = cachedGreeting.text;
@@ -249,14 +267,14 @@ async function handleStartCall(sessionId, patientId) {
 
     if (greetingAudioBase64) {
       const audioBuffer = Buffer.from(greetingAudioBase64, 'base64');
-      session.assistantSpeakingUntil = Date.now() + estimateWavDurationMs(audioBuffer) + 800;
+      session.assistantSpeakingUntil = Date.now() + estimateWavDurationMs(audioBuffer) + ASSISTANT_SPEECH_GUARD_MS;
       safeSend(session.ws, { type: 'ai_audio', data: greetingAudioBase64, transcript: greeting, greeting: true });
     } else {
       const ttsPath = path.join(AUDIO_TMP_DIR, `greeting_${sessionId}_${Date.now()}.wav`);
       const audioFile = await tryGenerateTTS(greeting, ttsPath);
       if (audioFile) {
         const audioData = fs.readFileSync(ttsPath);
-        session.assistantSpeakingUntil = Date.now() + estimateWavDurationMs(audioData) + 800;
+        session.assistantSpeakingUntil = Date.now() + estimateWavDurationMs(audioData) + ASSISTANT_SPEECH_GUARD_MS;
         safeSend(session.ws, { type: 'ai_audio', data: audioData.toString('base64'), transcript: greeting, greeting: true });
         try { if (fs.existsSync(ttsPath)) fs.unlinkSync(ttsPath); } catch (_) {}
       } else {

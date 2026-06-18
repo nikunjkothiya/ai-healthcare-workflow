@@ -1,8 +1,8 @@
 <template>
   <div class="patients">
     <div class="page-header">
-      <h1>👥 Patient Management</h1>
-      <p class="subtitle">Manage your patient database and categories</p>
+      <h1>Patients</h1>
+      <p class="subtitle">Manage patient contact details and outreach groups.</p>
     </div>
 
     <div class="actions-bar">
@@ -82,7 +82,7 @@
             <td>{{ patient.last_contact ? formatDate(patient.last_contact) : 'Never' }}</td>
             <td>
               <span :class="'status-badge ' + patient.status">
-                {{ patient.status }}
+                {{ formatPatientStatus(patient.status) }}
               </span>
             </td>
             <td>
@@ -252,6 +252,7 @@
 
 <script>
 import api from '../api.js';
+import { formatPatientStatus } from '../displayLabels.js';
 
 export default {
   name: 'Patients',
@@ -312,6 +313,7 @@ export default {
     await this.loadPatients();
   },
   methods: {
+    formatPatientStatus,
     async loadPatients() {
       this.loading = true;
       try {

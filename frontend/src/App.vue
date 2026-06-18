@@ -3,7 +3,7 @@
     <nav v-if="isAuthenticated" class="navbar" :key="navKey">
       <div class="nav-brand">
         <span class="logo">🏥</span>
-        <span class="brand-text">Healthcare AI Voice Agent</span>
+        <span class="brand-text">Care Outreach Assistant</span>
       </div>
       <div class="nav-links">
         <template v-if="isProductAdmin">
@@ -13,17 +13,17 @@
         </template>
         <template v-else>
           <router-link to="/dashboard" class="nav-link">
-            <span class="icon">📊</span> Dashboard
+            <span class="icon">📊</span> Overview
           </router-link>
           <router-link to="/patients" class="nav-link">
             <span class="icon">👥</span> Patients
           </router-link>
           <router-link to="/campaigns" class="nav-link">
-            <span class="icon">📋</span> Campaigns
+            <span class="icon">📋</span> Outreach
           </router-link>
         </template>
         <button @click="logout" class="logout-btn">
-          <span class="icon">🚪</span> Logout
+          <span class="icon">🚪</span> Sign out
         </button>
       </div>
     </nav>

@@ -1,4 +1,4 @@
-# AI Healthcare Voice Agent - Production-Grade System
+# Care Outreach Assistant - Production-Grade System
 
 ## Overview
 
@@ -32,10 +32,10 @@ chmod +x start.sh verify.sh
 
 The `start.sh` script will automatically:
 1. Check prerequisites (Docker, Docker Compose)
-2. Detect LLM provider (Gemini or Ollama from `.env`)
-3. Validate local model files (Whisper, TTS; Ollama models only if `LLM_PROVIDER=ollama`)
+2. Validate OpenRouter LLM configuration from `.env`
+3. Validate local model files (Whisper and TTS only)
 4. Build all Docker images
-5. Start all services (Ollama container only starts in Ollama mode)
+5. Start all services
 6. Initialize database with seed data
 7. Wait for all services to be healthy
 
@@ -63,7 +63,7 @@ docker compose down -v --remove-orphans
 # 2) Build fresh images without cache
 docker compose build --no-cache
 
-# 3) Ensure local model files exist in models/whisper, models/ollama, and models/tts
+# 3) Ensure local model files exist in models/whisper and models/tts
 
 # 4) Start all services
 docker compose up -d
@@ -239,7 +239,6 @@ AI-Caller-Healthcare/
            sttService.js   # Speech-to-text
            llmService.js   # LLM inference
            ttsService.js   # Text-to-speech
-           modelRuntimeManager.js # 3B/7B model swap control
            jsonValidation.js      # Strict JSON schema validators
            healthcareSafety.js    # Emergency keyword safety rules
            conversationMemory.js  # Sliding conversation memory helpers
@@ -305,8 +304,8 @@ Backend API (Express)
   v
 Worker (BullMQ)
   +-> Whisper (STT)
-  +-> Gemini API (Primary LLM) or Ollama (Fallback LLM)
-  +-> Coqui (TTS)
+  +-> OpenRouter API (LLM)
+  +-> Kokoro (TTS)
 ```
 
 ### Orchestration Layer
@@ -394,7 +393,7 @@ scheduled -> queued -> in_progress -> awaiting_response -> completed
     Whisper base.en transcribes in 1.8s chunks with partial updates
 
 6. AI analyzes response
-    Gemini 2.0 Flash (or Ollama fallback) returns strict JSON turn output
+    OpenRouter returns strict JSON turn output
     Emergency words auto-trigger transfer_human guidance override
     Sliding memory uses campaign objective + patient context + last 6 turns
     Continues conversation
@@ -485,10 +484,9 @@ dead_letter_queue (
 |---------|-------|------|---------|
 | **postgres** | postgres:15-alpine | 5434 | Database |
 | **redis** | redis:7-alpine | 6381 | Queue + PubSub |
-| **ollama** | ollama/ollama | 11434 | LLM fallback (optional — `--profile ollama`) |
 | **whisper** | Custom | 9000 (internal) | Speech-to-text (whisper-server) |
-| **tts** | synesthesiam/coqui-tts | 5002 | Server-side text-to-speech |
-| **backend** | Custom Node.js | 4000 | API + WebSocket + Gemini LLM |
+| **kokoro** | ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.2 | 8880 | Server-side text-to-speech |
+| **backend** | Custom Node.js | 4000 | API + WebSocket + OpenRouter LLM |
 | **worker** | Custom Node.js | - | Job processor |
 | **frontend** | Custom Vue 3 | 3000 | Dashboard |
 
@@ -515,47 +513,46 @@ REDIS_PORT=6379
 # JWT
 JWT_SECRET=supersecret_change_in_production
 
-# LLM Provider ('gemini' or 'ollama')
-LLM_PROVIDER=gemini
+# LLM Provider
+LLM_PROVIDER=openrouter
 
-# Gemini API (Primary LLM)
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
-GEMINI_MODEL_CHAT=gemini-2.0-flash
-GEMINI_MODEL_ANALYSIS=gemini-2.0-flash
-GEMINI_MODEL_DECISION=gemini-2.0-flash
-
-# Ollama (Fallback LLM — only used when LLM_PROVIDER=ollama)
-OLLAMA_URL=http://ollama:11434
-OLLAMA_MODEL_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_CHAT_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_ANALYSIS_PATH=/models/ollama/qwen2.5-7b-instruct-q4_K_M.gguf
-OLLAMA_MODEL_DECISION_PATH=/models/ollama/qwen2.5-3b-instruct-q4_K_M.gguf
-LLM_MAX_TOKENS=200
-LLM_NUM_CTX=1536
-LLM_NUM_CTX_REALTIME=1536
-LLM_MAX_TOKENS_ANALYSIS=768
-LLM_NUM_CTX_ANALYSIS=8192
-LLM_TIMEOUT_MS=45000
+# OpenRouter API (default LLM)
+OPENROUTER_API_KEY=YOUR_OPENROUTER_API_KEY_HERE
+OPENROUTER_MODEL=openrouter/free
+OPENROUTER_HTTP_REFERER=http://localhost:3000
+OPENROUTER_APP_TITLE=Care Outreach Assistant
+LLM_TIMEOUT_MS=15000
+LLM_MAX_RETRIES=1
+LLM_RETRY_DELAY_MS=800
+LLM_REALTIME_TIMEOUT_MS=8000
+LLM_REALTIME_MAX_RETRIES=0
+LLM_FAILURE_HANDOFF=true
 
 # STT (Whisper)
 WHISPER_HOST=whisper
 WHISPER_PORT=9000
-WHISPER_MODEL_PATH=/models/whisper/ggml-small.en.bin
+WHISPER_MODEL_PATH=/models/whisper/ggml-small.en-q5_1.bin
 STT_CHUNK_MS=2500
-STT_SILENCE_MS=800
+STT_REALTIME_CHUNK_MS=8000
+STT_REALTIME_SPLIT=false
+STT_REALTIME_SPLIT_THRESHOLD_MS=15000
+STT_SILENCE_MS=500
+VAD_MODEL_PATH=/models/vad/silero_vad_op18_ifless.onnx
 
-# TTS (Coqui)
-TTS_HOST=tts
-TTS_PORT=5002
-TTS_MODEL_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/model_file.pth.tar
-TTS_CONFIG_PATH=/models/tts/tts_models--en--ljspeech--tacotron2-DDC/config.json
-TTS_VOCODER_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/model_file.pth.tar
-TTS_VOCODER_CONFIG_PATH=/models/tts/vocoder_models--en--ljspeech--hifigan_v2/config.json
+# TTS (Kokoro)
+KOKORO_HOST=kokoro
+KOKORO_PORT=8880
+KOKORO_VOICE=af_bella
+KOKORO_LANG=en-us
 MAX_CALL_DURATION_MS=600000
 MAX_CONVERSATION_TURNS=30
 MAX_RUNTIME_RAM_GB=14
+ASSISTANT_SPEECH_GUARD_MS=350
 REQUIRE_SERVER_TTS=true
 VITE_REQUIRE_SERVER_TTS=true
+VITE_VAD_MIN_SPEECH_MS=300
+VITE_VAD_END_SILENCE_MS=650
+VITE_VAD_MAX_UTTERANCE_MS=8000
 
 # Worker
 WORKER_CONCURRENCY=1
@@ -575,33 +572,30 @@ All large AI model binaries are now served via local bind mounts to avoid re-dow
 Only `README.md` files are committed under `models/`; model assets must be provided locally by each user.
 
 **Whisper (STT):**
-- Default Model: `models/whisper/ggml-small.en.bin` (466MB)
-- Chunking: ~2.5s realtime chunks with deduplicated partial updates
-- Silence finalization: ~800ms before LLM turn submission
+- Default Model: `models/whisper/ggml-small.en-q5_1.bin` (~181MB quantized)
+- Live calls: browser VAD sends one complete utterance after ~650ms of silence; backend realtime splitting is disabled by default to avoid duplicate Whisper work
+- Batch/offline transcription still uses `STT_CHUNK_MS` chunking where needed
 - Runs in Docker container via `whisper-server` on port `9000` (`/inference`)
 - Frontend `MobileCall` uses a client-side VAD + utterance buffer so only speech segments (not raw streaming audio) are encoded to WAV and sent as `audio_chunk`s to the backend, which reduces STT load and latency
+- Silero VAD model file: `models/vad/silero_vad_op18_ifless.onnx` is available for server-side VAD integration after timing tests
 - **No model downloads during build** — model is mounted to `/models/whisper/` inside container.
 
-**Gemini API (Primary LLM):**
-- Default provider — set `LLM_PROVIDER=gemini` in `.env`
-- Uses `gemini-2.0-flash` for chat, analysis, and decision tasks
-- Requires `GEMINI_API_KEY` to be set with a valid Google AI API key
-- No local model files needed — all inference runs via the Gemini API
+**OpenRouter API (Default LLM):**
+- Only supported LLM provider — set `LLM_PROVIDER=openrouter` in `.env`
+- Uses `OPENROUTER_MODEL=openrouter/free` by default, which routes to currently available free OpenRouter model variants
+- Requires `OPENROUTER_API_KEY`
+- `OPENROUTER_HTTP_REFERER` is only sent as OpenRouter's `HTTP-Referer` attribution header. Use `http://localhost:3000` for local development and your deployed frontend URL in production.
+- `OPENROUTER_APP_TITLE` is sent as `X-OpenRouter-Title`
+- `openrouter/free` is useful for no-billing development, but it is a router, not one fixed model. For validated healthcare behavior, prefer an explicit `:free` model once you have tested one with your call scripts.
+- No local LLM model files needed — all LLM inference runs through OpenRouter's OpenAI-compatible chat completions API
+- Optional per-stage overrides: `OPENROUTER_MODEL_CHAT`, `OPENROUTER_MODEL_REALTIME`, `OPENROUTER_MODEL_DECISION`, `OPENROUTER_MODEL_ANALYSIS`
 - Supports 6 campaign-type-specific prompt templates
 
-**Ollama (Fallback LLM — optional):**
-- Set `LLM_PROVIDER=ollama` to use local models instead of Gemini
-- Runs as `healthcare_ollama` container on port `11434` (only starts with `--profile ollama`)
-- Registers/refreshes local GGUF files from `models/ollama/` at startup
-- Env variables used: `OLLAMA_MODEL_PATH`, `OLLAMA_MODEL_CHAT_PATH`, `OLLAMA_MODEL_ANALYSIS_PATH`, `OLLAMA_MODEL_DECISION_PATH`
-- Internal Ollama tags: `healthcare-base`, `healthcare-chat`, `healthcare-analysis`, `healthcare-decision`
-
-**Coqui TTS (Required in Production Mode):**
-- Default Model: `tacotron2-DDC` (+ HiFiGAN vocoder) (~112MB)
-- Files are stored in `models/tts/` and mounted to `/models/tts` inside container.
-- Container starts with explicit local file paths (`TTS_MODEL_PATH`, `TTS_CONFIG_PATH`, `TTS_VOCODER_PATH`, `TTS_VOCODER_CONFIG_PATH`).
+**Kokoro TTS (Default):**
+- Default voice: `af_bella`
+- Runs in the `healthcare_kokoro` container on port `8880`
+- No local TTS model files are required; Kokoro runs from its Docker image
 - Backend enforces server-generated voice when `REQUIRE_SERVER_TTS=true`
-- **No model downloads during build or startup** - models load directly from host mount.
 - Backend TTS service splits long replies into sentences and now hard-caps synthesis to the first 2–3 spoken sentences per turn, which keeps latency stable while preserving natural conversational flow.
 
 ---
@@ -849,7 +843,7 @@ curl http://localhost:4000/admin/calls/1/events \
 - Enables async workflows
 
 ### Realtime Decision Engine
-- Uses Gemini 2.0 Flash (primary) or Qwen2.5 via Ollama (fallback) for live turn JSON
+- Uses OpenRouter for live turn JSON
 - 6 campaign-type-specific prompt templates for targeted conversations
 - Maintains sliding memory (system prompt + campaign objective + patient context + summary + last 6 turns)
 - Fact tracking (confirmed appointments, barriers, concerns) and emotional state detection
@@ -966,8 +960,8 @@ docker compose up --scale backend=3 -d
 - **Worker** -> AWS Lambda (serverless)
 - **PostgreSQL** -> AWS RDS (managed database)
 - **Whisper** -> AWS Transcribe
-- **Ollama** -> OpenAI/Anthropic API
-- **Coqui TTS** -> AWS Polly
+- **OpenRouter** -> Direct model/provider APIs if needed
+- **Kokoro TTS** -> AWS Polly or another approved managed TTS provider
 
 **Architecture remains identical!**
 
@@ -1011,17 +1005,6 @@ sudo usermod -aG docker $USER
 docker ps
 ```
 
-#### Issue: "Cannot connect to Ollama"
-**Solution:**
-```bash
-# Check Ollama container
-docker logs healthcare_ollama
-docker compose restart ollama
-
-# Verify API
-curl http://localhost:11434/api/tags
-```
-
 #### Issue: "Port already in use"
 **Solution:**
 ```bash
@@ -1044,13 +1027,6 @@ docker compose up -d
 ```bash
 docker logs healthcare_worker
 docker compose restart worker
-```
-
-### Ollama slow
-```bash
-# Ensure smaller GGUF quantizations are used in models/ollama and paths in .env
-docker logs -f healthcare_ollama
-docker compose restart ollama
 ```
 
 ### Database issues

@@ -84,7 +84,8 @@ async function handleAudioChunk(sessionId, audioData, flushCallback) {
     const sttStartedAt = Date.now();
     const sttResult = await sttService.transcribeRealtime(audioPath, {
       chunkMs: STT_REALTIME_CHUNK_MS,
-      silenceThresholdMs: SILENCE_FINALIZE_MS
+      silenceThresholdMs: SILENCE_FINALIZE_MS,
+      singleUtterance: true
     });
     console.log(`[LATENCY][STT] ${Date.now() - sttStartedAt}ms`);
     cleanupFile(audioPath);

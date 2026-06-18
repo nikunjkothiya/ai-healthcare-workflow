@@ -2,14 +2,14 @@
   <div class="call-details">
     <div class="header">
       <button @click="$router.back()" class="btn-back">← Back</button>
-      <h1>Call Details</h1>
+      <h1>Patient Call Summary</h1>
     </div>
     
-    <div v-if="loading" class="loading">Loading call details...</div>
+    <div v-if="loading" class="loading">Loading patient call summary...</div>
     
     <div v-else-if="call" class="details-container">
       <div class="info-section">
-        <h2>Call Information</h2>
+        <h2>Patient & Call</h2>
         <div class="info-grid">
           <div class="info-item">
             <strong>Patient:</strong> {{ call.patient_name }}
@@ -18,68 +18,73 @@
             <strong>Phone:</strong> {{ call.phone }}
           </div>
           <div class="info-item">
-            <strong>Campaign:</strong> {{ call.campaign_name }}
+            <strong>Outreach Program:</strong> {{ call.campaign_name }}
           </div>
           <div class="info-item">
             <strong>Date:</strong> {{ formatDate(call.created_at) }}
           </div>
           <div class="info-item">
-            <strong>Duration:</strong> {{ call.duration }}s
+            <strong>Duration:</strong> {{ formatCallDuration(call.duration, call) }}
           </div>
           <div class="info-item">
-            <strong>Sentiment:</strong>
-            <span :class="'sentiment-badge ' + call.sentiment">
-              {{ call.sentiment }}
+            <strong>Call Status:</strong>
+            <span :class="'call-state-badge ' + call.state">
+              {{ formatCallState(call.state) }}
+            </span>
+          </div>
+          <div class="info-item">
+            <strong>Conversation Tone:</strong>
+            <span :class="'tone-badge ' + toneClass(call.sentiment, call)">
+              {{ formatConversationTone(call.sentiment, call) }}
             </span>
           </div>
         </div>
       </div>
       
       <div class="structured-section">
-        <h2>Analysis Results</h2>
+        <h2>Outcome Summary</h2>
         <div class="structured-grid">
           <div class="structured-item">
-            <strong>Appointment Confirmed:</strong>
-            {{ call.appointment_confirmed ? '✅ Yes' : '❌ No' }}
+            <strong>Appointment Status:</strong>
+            <span :class="['outcome-value', { success: call.appointment_confirmed }]">
+              {{ formatAppointmentOutcome(call) }}
+            </span>
           </div>
           <div class="structured-item">
-            <strong>Callback Requested:</strong>
-            {{ call.requested_callback ? '✅ Yes' : '❌ No' }}
+            <strong>Follow-up Needed:</strong>
+            <span :class="['outcome-value', { warning: call.requested_callback }]">
+              {{ formatFollowupOutcome(call) }}
+            </span>
           </div>
           <div class="structured-item">
-            <strong>Campaign Goal Achieved:</strong>
-            {{ call.campaign_goal_achieved ? '✅ Yes' : '❌ No' }}
+            <strong>Outreach Goal:</strong>
+            <span :class="['outcome-value', { success: call.campaign_goal_achieved }]">
+              {{ formatGoalOutcome(call) }}
+            </span>
           </div>
           <div class="structured-item">
-            <strong>Urgency:</strong>
-            <span :class="'urgency-badge ' + (call.urgency || 'routine')">
-              {{ call.urgency || 'routine' }}
+            <strong>Priority:</strong>
+            <span :class="'priority-badge ' + priorityClass(call.urgency)">
+              {{ formatPriority(call.urgency) }}
             </span>
           </div>
         </div>
         <div v-if="parsedActionItems.length > 0" class="action-items-box">
-          <strong>📝 Action Items:</strong>
+          <strong>Care Team Actions:</strong>
           <ul>
             <li v-for="(item, index) in parsedActionItems" :key="index">{{ item }}</li>
           </ul>
         </div>
         <div class="summary-box">
-          <strong>Summary:</strong>
-          <p>{{ call.summary }}</p>
+          <strong>Call Summary:</strong>
+          <p>{{ formatSummary(call.summary, call) }}</p>
         </div>
       </div>
       
       <div class="transcript-section">
-        <h2>Full Transcript</h2>
+        <h2>Conversation Notes</h2>
         <div class="transcript-box">
-          <pre>{{ call.transcript }}</pre>
-        </div>
-      </div>
-      
-      <div class="json-section">
-        <h2>Raw JSON Output</h2>
-        <div class="json-box">
-          <pre>{{ formatJSON(call.structured_output) }}</pre>
+          <pre>{{ formatTranscript(call.transcript, call) }}</pre>
         </div>
       </div>
     </div>
@@ -88,6 +93,19 @@
 
 <script>
 import api from '../api.js';
+import {
+  formatAppointmentOutcome,
+  formatCallDuration,
+  formatCallState,
+  formatConversationTone,
+  formatFollowupOutcome,
+  formatGoalOutcome,
+  formatPriority,
+  formatSummary,
+  formatTranscript,
+  priorityClass,
+  toneClass
+} from '../displayLabels.js';
 
 export default {
   name: 'CallDetails',
@@ -111,6 +129,17 @@ export default {
     await this.loadCall();
   },
   methods: {
+    formatAppointmentOutcome,
+    formatCallDuration,
+    formatCallState,
+    formatConversationTone,
+    formatFollowupOutcome,
+    formatGoalOutcome,
+    formatPriority,
+    formatSummary,
+    formatTranscript,
+    priorityClass,
+    toneClass,
     async loadCall() {
       try {
         const callId = this.$route.params.id;
@@ -127,17 +156,6 @@ export default {
     
     formatDate(dateString) {
       return new Date(dateString).toLocaleString();
-    },
-    
-    formatJSON(json) {
-      if (typeof json === 'string') {
-        try {
-          json = JSON.parse(json);
-        } catch (e) {
-          return json;
-        }
-      }
-      return JSON.stringify(json, null, 2);
     }
   }
 };
@@ -186,8 +204,7 @@ export default {
 
 .info-section,
 .structured-section,
-.transcript-section,
-.json-section {
+.transcript-section {
   background: white;
   padding: 2rem;
   border-radius: 12px;
@@ -222,24 +239,32 @@ h2 {
   font-size: 0.9rem;
 }
 
-.sentiment-badge {
+.tone-badge,
+.call-state-badge {
   padding: 0.25rem 0.75rem;
   border-radius: 12px;
   font-size: 0.85rem;
   font-weight: 600;
 }
 
-.sentiment-badge.positive {
+.tone-badge.positive,
+.call-state-badge.completed,
+.call-state-badge.requires_followup {
   background: #d4edda;
   color: #155724;
 }
 
-.sentiment-badge.neutral {
+.tone-badge.neutral,
+.call-state-badge.scheduled,
+.call-state-badge.queued,
+.call-state-badge.in_progress,
+.call-state-badge.awaiting_response {
   background: #fff3cd;
   color: #856404;
 }
 
-.sentiment-badge.negative {
+.tone-badge.negative,
+.call-state-badge.failed {
   background: #f8d7da;
   color: #721c24;
 }
@@ -263,44 +288,45 @@ h2 {
   margin: 0;
 }
 
-.transcript-box,
-.json-box {
-  background: #2c3e50;
-  color: #ecf0f1;
+.transcript-box {
+  background: #f8f9fa;
+  color: #34495e;
   padding: 1.5rem;
   border-radius: 6px;
   overflow-x: auto;
 }
 
-.transcript-box pre,
-.json-box pre {
+.transcript-box pre {
   margin: 0;
   white-space: pre-wrap;
   word-wrap: break-word;
-  font-family: 'Courier New', monospace;
-  font-size: 0.9rem;
+  font-family: inherit;
+  font-size: 0.95rem;
   line-height: 1.6;
 }
 
-.urgency-badge {
+.priority-badge,
+.outcome-value {
   padding: 0.2rem 0.6rem;
   border-radius: 12px;
   font-size: 0.85rem;
   font-weight: 600;
-  text-transform: capitalize;
 }
 
-.urgency-badge.routine {
+.priority-badge.routine,
+.outcome-value.success {
   background: #d4edda;
   color: #155724;
 }
 
-.urgency-badge.urgent {
+.priority-badge.needs_attention,
+.priority-badge.urgent,
+.outcome-value.warning {
   background: #fff3cd;
   color: #856404;
 }
 
-.urgency-badge.critical {
+.priority-badge.critical {
   background: #f8d7da;
   color: #721c24;
 }

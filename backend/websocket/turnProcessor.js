@@ -21,7 +21,9 @@ const {
 const stateMachine = new CallStateMachine();
 const REQUIRE_SERVER_TTS = String(process.env.REQUIRE_SERVER_TTS || 'false').toLowerCase() === 'true';
 const MAX_CONVERSATION_TURNS = parseInt(process.env.MAX_CONVERSATION_TURNS, 10) || 30;
-const ASSISTANT_SPEECH_GUARD_MS = parseInt(process.env.ASSISTANT_SPEECH_GUARD_MS, 10) || 800;
+const ASSISTANT_SPEECH_GUARD_MS = parseInt(process.env.ASSISTANT_SPEECH_GUARD_MS, 10) || 350;
+const REALTIME_LLM_FAILURE_HANDOFF = String(process.env.LLM_FAILURE_HANDOFF || 'true').toLowerCase() === 'true';
+const LLM_FAILURE_HANDOFF_REPLY = 'I am sorry, our connection is having trouble. A care team member will follow up with you shortly. Thank you for your time.';
 
 function estimateWavDurationMs(audioBuffer) {
   if (!Buffer.isBuffer(audioBuffer) || audioBuffer.length < 44) return 0;
@@ -90,9 +92,9 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 
 // Safe fallback responses for when LLM fails — never end call on first failure
 const SAFE_FALLBACKS = [
-  "I apologize, could you please repeat that?",
-  "I'm sorry, I didn't quite catch that. Could you say it again?",
-  "I want to make sure I understood you correctly. Could you repeat that please?"
+  "I want to make sure I heard you clearly. Could you say that once more?",
+  "Could you repeat that once, please? I want to capture it correctly.",
+  "I did not catch that clearly. Please say it one more time."
 ];
 
 // Patterns that indicate prompt injection or non-conversational input
@@ -205,30 +207,27 @@ async function flushPendingUserTranscript(sessionId, force = false) {
         console.error(`[LLM-FAIL] Turn ${session.turnCount}: ${llmError.message}`);
         session.consecutiveFailures = (session.consecutiveFailures || 0) + 1;
 
-        if (session.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-          console.error(`[LLM-FAIL] ${session.consecutiveFailures} consecutive failures — ending call gracefully`);
-          session.finalState = STATES.REQUIRES_FOLLOWUP;
-          session.requiresFollowup = true;
-          safeSend(session.ws, {
-            type: 'ai_response',
-            transcript: 'I apologize, but I\'m having trouble with our connection. A staff member will follow up with you shortly. Thank you for your patience.',
-            shouldEnd: true
-          });
-          setTimeout(() => {
-            handleEndCall(sessionId, session.patientId).catch(err => console.error('Failed to end call after consecutive LLM failures:', err.message));
-          }, 600);
-          return;
+        if (REALTIME_LLM_FAILURE_HANDOFF || session.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          console.error(`[LLM-FAIL] Ending live turn safely after ${session.consecutiveFailures} realtime failure(s)`);
+          realtimeTurn = {
+            reply: LLM_FAILURE_HANDOFF_REPLY,
+            action: 'transfer_human',
+            goal_status: 'failed',
+            risk_detected: false,
+            confidence: 0,
+            _fallback: true
+          };
+        } else {
+          const fallbackIdx = (session.consecutiveFailures - 1) % SAFE_FALLBACKS.length;
+          realtimeTurn = {
+            reply: SAFE_FALLBACKS[fallbackIdx],
+            action: 'continue',
+            goal_status: 'pending',
+            risk_detected: false,
+            confidence: 0,
+            _fallback: true
+          };
         }
-
-        // Graceful recovery: use safe fallback and continue conversation
-        const fallbackIdx = (session.consecutiveFailures - 1) % SAFE_FALLBACKS.length;
-        realtimeTurn = {
-          reply: SAFE_FALLBACKS[fallbackIdx],
-          action: 'continue',
-          goal_status: 'pending',
-          risk_detected: false,
-          confidence: 0.5
-        };
       }
       console.log(`[LATENCY][LLM] ${Date.now() - llmStartedAt}ms`);
     }

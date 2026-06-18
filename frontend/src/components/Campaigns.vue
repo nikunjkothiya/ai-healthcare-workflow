@@ -1,16 +1,16 @@
 <template>
   <div class="campaigns">
     <div class="header">
-      <h1>Campaigns</h1>
+      <h1>Outreach Programs</h1>
       <button @click="showCreateModal = true" class="btn-primary">
-        + Create Campaign
+        + Create Outreach
       </button>
     </div>
     
-    <div v-if="loading" class="loading">Loading campaigns...</div>
+    <div v-if="loading" class="loading">Loading outreach programs...</div>
     
     <div v-else-if="campaigns.length === 0" class="no-data">
-      No campaigns yet. Create your first campaign!
+      No outreach programs yet. Create one to start patient calls.
     </div>
     
     <div v-else class="campaigns-grid">
@@ -19,7 +19,7 @@
           <h3>{{ campaign.name }}</h3>
           <div class="campaign-badges">
             <span v-if="campaign.campaign_type" class="type-badge">{{ formatCampaignType(campaign.campaign_type) }}</span>
-            <span :class="'status-badge ' + campaign.status">{{ campaign.status }}</span>
+            <span :class="'status-badge ' + campaign.status">{{ formatCampaignStatus(campaign.status) }}</span>
           </div>
         </div>
         <div class="campaign-meta">
@@ -27,10 +27,10 @@
         </div>
         <div class="campaign-actions">
           <button @click="viewCampaign(campaign.id)" class="btn-secondary">
-            View Details
+            Open
           </button>
           <button @click="deleteCampaign(campaign)" class="btn-danger">
-            Delete Campaign
+            Delete
           </button>
         </div>
       </div>
@@ -39,30 +39,30 @@
     <!-- Create Campaign Modal -->
     <div v-if="showCreateModal" class="modal-overlay" @click="closeCreateModal">
       <div class="modal" @click.stop>
-        <h2>Create New Campaign</h2>
+        <h2>Create Outreach Program</h2>
         <form @submit.prevent="createCampaign">
           <div class="form-group">
-            <label>Campaign Name</label>
+            <label>Program Name</label>
             <input v-model="newCampaignName" type="text" required placeholder="e.g., Diabetes Appointment Reminders" />
           </div>
           <div class="form-group">
-            <label>Campaign Type *</label>
+            <label>Program Type *</label>
             <select v-model="newCampaignType" class="form-select" required>
               <option v-for="ct in campaignTypes" :key="ct.value" :value="ct.value">
                 {{ ct.icon }} {{ ct.label }}
               </option>
             </select>
-            <small class="help-text">This determines how the AI agent will approach the conversation.</small>
+            <small class="help-text">This determines how the care assistant will approach the conversation.</small>
           </div>
           <div class="form-group">
-            <label>Opening Prompt (First thing AI says when patient answers)</label>
+            <label>Opening Script (first message when the patient answers)</label>
             <textarea 
               v-model="newCampaignOpening" 
               rows="3" 
               required
               placeholder="e.g., Hello, I'm calling from City General Hospital to confirm your upcoming appointment with Dr. Smith."
             ></textarea>
-            <small class="help-text">This is what the AI agent will say first when the patient answers the call.</small>
+            <small class="help-text">This is what the patient hears first when they answer the call.</small>
           </div>
           <div class="form-group">
             <label>When to Start Calling?</label>
@@ -80,7 +80,7 @@
           <div v-if="startTimeOption === 'scheduled'" class="form-group">
             <label>Schedule Date & Time</label>
             <input v-model="scheduleDateTime" type="datetime-local" required />
-            <small class="help-text">Campaign will start calling patients at this time</small>
+            <small class="help-text">Patient calls will start at this time.</small>
           </div>
           <div class="form-group">
             <label>Select Patient Groups *</label>
@@ -115,23 +115,23 @@
       <div class="modal large" @click.stop>
         <h2>{{ selectedCampaign.campaign.name }}</h2>
         <div class="campaign-details">
-          <p><strong>Status:</strong> <span :class="'status-badge ' + selectedCampaign.campaign.status">{{ selectedCampaign.campaign.status }}</span></p>
+          <p><strong>Status:</strong> <span :class="'status-badge ' + selectedCampaign.campaign.status">{{ formatCampaignStatus(selectedCampaign.campaign.status) }}</span></p>
           <p v-if="selectedCampaign.campaign.campaign_type"><strong>Type:</strong> <span class="type-badge">{{ formatCampaignType(selectedCampaign.campaign.campaign_type) }}</span></p>
           <p><strong>Total Patients:</strong> {{ selectedCampaign.patients.length }}</p>
           
           <div v-if="selectedCampaign.campaign.status === 'running'" class="live-calls-section">
-            <h3>🔴 Live Campaign - Patient Call URLs</h3>
-            <p class="help-text">Copy and open these URLs to simulate patient phones. AI will call them one by one.</p>
+            <h3>Live Outreach - Patient Call Links</h3>
+            <p class="help-text">Open these links to test patient phones. Calls will start one by one.</p>
           </div>
           
-          <h3>Patients & Call URLs</h3>
+          <h3>Patients & Call Links</h3>
           <table>
             <thead>
               <tr>
                 <th>Name</th>
                 <th>Phone</th>
                 <th>Status</th>
-                <th>Patient Call URL</th>
+                <th>Patient Call Link</th>
               </tr>
             </thead>
             <tbody>
@@ -140,7 +140,7 @@
                 <td>{{ patient.phone }}</td>
                 <td>
                   <span :class="'status-badge ' + patient.status">
-                    {{ patient.status }}
+                    {{ formatPatientStatus(patient.status) }}
                   </span>
                 </td>
                 <td>
@@ -165,7 +165,7 @@
         </div>
         <div class="modal-actions">
           <button v-if="selectedCampaign.campaign.status === 'running'" @click="openAllPatientUrls(selectedCampaign.campaign.id, selectedCampaign.patients)" class="btn-primary">
-            🚀 Open All Patient Phones
+            Open All Test Calls
           </button>
           <button @click="selectedCampaign = null" class="btn-secondary">Close</button>
         </div>
@@ -176,6 +176,7 @@
 
 <script>
 import api from '../api.js';
+import { formatCampaignStatus, formatPatientStatus } from '../displayLabels.js';
 
 export default {
   name: 'Campaigns',
@@ -239,13 +240,15 @@ export default {
     }
   },
   methods: {
+    formatCampaignStatus,
+    formatPatientStatus,
     async loadCampaigns() {
       try {
         const response = await api.get('/campaigns');
         this.campaigns = response.data.campaigns;
       } catch (error) {
         console.error('Failed to load campaigns:', error);
-        this.$toastError('Failed to load campaigns');
+        this.$toastError('Failed to load outreach programs');
       } finally {
         this.loading = false;
       }
@@ -307,7 +310,7 @@ export default {
         await this.loadCampaigns();
         await this.loadCategoryCounts();
         await this.viewCampaign(campaignId);
-        this.$toastSuccess(`Campaign created and ${campaignStatus} with ${queuedCount} patients.`);
+        this.$toastSuccess(`Outreach created: ${formatCampaignStatus(campaignStatus)} for ${queuedCount} patients.`);
       } catch (error) {
         console.error('Failed to create campaign:', error);
         if (campaignId) {
@@ -317,7 +320,7 @@ export default {
             console.error('Failed to rollback partial campaign:', cleanupError);
           }
         }
-        this.$toastError(error.response?.data?.error || 'Failed to create and schedule campaign');
+        this.$toastError(error.response?.data?.error || 'Failed to create and schedule outreach');
       } finally {
         this.creatingCampaign = false;
       }
@@ -342,8 +345,8 @@ export default {
     
     async deleteCampaign(campaign) {
       const confirmed = await this.$confirmAction({
-        title: 'Delete campaign?',
-        text: `Delete campaign "${campaign.name}" and its call history? This action cannot be undone.`,
+        title: 'Delete outreach program?',
+        text: `Delete "${campaign.name}" and its call history? This action cannot be undone.`,
         confirmButtonText: 'Yes, delete it',
         cancelButtonText: 'Cancel'
       });
@@ -357,10 +360,10 @@ export default {
         }
         await this.loadCampaigns();
         await this.loadCategoryCounts();
-        this.$toastSuccess('Campaign deleted successfully');
+        this.$toastSuccess('Outreach program deleted');
       } catch (error) {
         console.error('Failed to delete campaign:', error);
-        this.$toastError(error.response?.data?.error || 'Failed to delete campaign');
+        this.$toastError(error.response?.data?.error || 'Failed to delete outreach program');
       }
     },
 
@@ -380,7 +383,7 @@ export default {
         this.selectedCampaign = response.data;
       } catch (error) {
         console.error('Failed to load campaign details:', error);
-        this.$toastError('Failed to load campaign details');
+        this.$toastError('Failed to load outreach details');
       }
     },
     
@@ -395,7 +398,7 @@ export default {
     copyPatientUrl(patientId, campaignId) {
       const url = this.getPatientCallUrl(patientId, campaignId);
       navigator.clipboard.writeText(url);
-      this.$toastSuccess('Patient call URL copied! Open in a new browser tab to simulate patient phone.');
+      this.$toastSuccess('Patient call link copied.');
     },
     
     openPatientUrl(patientId, campaignId) {

@@ -1,8 +1,8 @@
 <template>
   <div class="login-container">
     <div class="login-card">
-      <h1>🏥 Healthcare AI</h1>
-      <h2>Voice Agent Platform</h2>
+      <h1>Care Outreach Assistant</h1>
+      <h2>Patient call automation for care teams</h2>
       
       <form @submit.prevent="handleSubmit">
         <div class="form-group">

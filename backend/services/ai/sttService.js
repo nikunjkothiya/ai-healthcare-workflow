@@ -9,11 +9,10 @@ const NON_SPEECH_ARTIFACT_REGEX = /\[(?:BLANK_AUDIO|SILENCE|NO_SPEECH|MUSIC)\]|\
 
 class STTService {
   constructor() {
-    this.sttProvider = (process.env.STT_PROVIDER || 'whisper').toLowerCase();
     this.whisperHost = process.env.WHISPER_HOST || 'whisper';
     this.whisperPort = parseInt(process.env.WHISPER_PORT, 10) || 9000;
     this.whisperBaseUrl = `http://${this.whisperHost}:${this.whisperPort}`;
-    this.modelPath = process.env.WHISPER_MODEL_PATH || '/models/whisper/ggml-small.en.bin';
+    this.modelPath = process.env.WHISPER_MODEL_PATH || '/models/whisper/ggml-small.en-q5_1.bin';
     this.whisperBinaryPath = process.env.WHISPER_BINARY_PATH || '/whisper.cpp/build/bin/whisper-cli';
 
     this.realtimeChunkMs = parseInt(process.env.STT_CHUNK_MS, 10) || 1200;
@@ -21,6 +20,8 @@ class STTService {
     this.silenceFinalizeMs = parseInt(process.env.STT_SILENCE_MS, 10) || 600;
     this.silenceRmsThreshold = parseFloat(process.env.STT_VAD_SILENCE_RMS || '0.005');
     this.maxConcurrentTranscriptions = parseInt(process.env.STT_MAX_CONCURRENT, 10) || 3;
+    this.realtimeSplitEnabled = String(process.env.STT_REALTIME_SPLIT || 'false').toLowerCase() === 'true';
+    this.realtimeSplitThresholdMs = parseInt(process.env.STT_REALTIME_SPLIT_THRESHOLD_MS, 10) || 15000;
   }
 
   /**
@@ -68,6 +69,22 @@ class STTService {
     }
 
     const wavBuffer = fs.readFileSync(audioFilePath);
+    const durationMs = this.getWavDurationMs(wavBuffer);
+    const shouldSplit = this.realtimeSplitEnabled && durationMs > this.realtimeSplitThresholdMs;
+
+    if (!shouldSplit) {
+      const transcript = this.cleanTranscriptText(await this._transcribeSingle(audioFilePath, options));
+      const trailingSilenceMs = this.detectTrailingSilenceMs(wavBuffer);
+      return {
+        partials: transcript ? [transcript] : [],
+        transcript,
+        isFinal: options.singleUtterance !== false || trailingSilenceMs >= silenceThresholdMs,
+        trailingSilenceMs,
+        chunkMs,
+        silenceThresholdMs
+      };
+    }
+
     const chunks = this.splitWavIntoChunks(wavBuffer, chunkMs, overlapMs);
     const partials = [];
 
@@ -114,15 +131,6 @@ class STTService {
       const isValid = await this.validateAudio(audioFilePath);
       if (!isValid) {
         return '';
-      }
-
-      if (this.sttProvider === 'moonshine') {
-        try {
-          const moonshineService = require('./moonshineService');
-          return this.cleanTranscriptText(await moonshineService.transcribe(audioFilePath, options));
-        } catch (err) {
-          console.warn(`STT: Moonshine transcription failed (${err.message}), falling back to Whisper...`);
-        }
       }
 
       try {
@@ -210,6 +218,14 @@ class STTService {
     }
 
     return null;
+  }
+
+  getWavDurationMs(wavBuffer) {
+    const meta = this.parseWavMeta(wavBuffer);
+    if (!meta) return 0;
+    const bytesPerSample = (meta.bitsPerSample / 8) * meta.channels;
+    if (!bytesPerSample || !meta.sampleRate) return 0;
+    return Math.round((meta.data.length / bytesPerSample / meta.sampleRate) * 1000);
   }
 
   createWavBuffer(pcmData, meta) {
@@ -478,14 +494,6 @@ class STTService {
    * @returns {Promise<boolean>}
    */
   async healthCheck() {
-    if (this.sttProvider === 'moonshine') {
-      try {
-        const moonshineService = require('./moonshineService');
-        const healthy = await moonshineService.isHealthy();
-        if (healthy) return true;
-      } catch (_) {}
-    }
-
     try {
       const response = await axios.get(`${this.whisperBaseUrl}/`, { timeout: 3000 });
       return response.status === 200;

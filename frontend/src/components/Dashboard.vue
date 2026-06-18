@@ -1,8 +1,8 @@
 <template>
   <div class="dashboard">
     <div class="page-header">
-      <h1>📊 Dashboard</h1>
-      <p class="subtitle">Overview of your healthcare outreach campaigns</p>
+      <h1>Outreach Performance</h1>
+      <p class="subtitle">Track patient calls, appointment outcomes, and follow-up work.</p>
     </div>
     
     <div class="stats-grid">
@@ -10,7 +10,7 @@
         <div class="stat-icon campaigns">📋</div>
         <div class="stat-content">
           <div class="stat-value">{{ stats.totalCampaigns }}</div>
-          <div class="stat-label">Total Campaigns</div>
+          <div class="stat-label">Outreach Programs</div>
         </div>
       </div>
       
@@ -18,7 +18,7 @@
         <div class="stat-icon calls">📞</div>
         <div class="stat-content">
           <div class="stat-value">{{ stats.totalCalls }}</div>
-          <div class="stat-label">Total Calls</div>
+          <div class="stat-label">Patient Calls</div>
         </div>
       </div>
       
@@ -26,54 +26,54 @@
         <div class="stat-icon confirmed">✅</div>
         <div class="stat-content">
           <div class="stat-value">{{ stats.confirmedAppointments }}</div>
-          <div class="stat-label">Confirmed Appointments</div>
+          <div class="stat-label">Appointments Confirmed</div>
         </div>
       </div>
       
       <div class="stat-card">
-        <div class="stat-icon positive">😊</div>
+        <div class="stat-icon positive">+</div>
         <div class="stat-content">
-          <div class="stat-value">{{ stats.sentimentBreakdown.positive }}</div>
-          <div class="stat-label">Positive Sentiment</div>
+          <div class="stat-value">{{ stats.requiresFollowup }}</div>
+          <div class="stat-label">Follow-ups Needed</div>
         </div>
       </div>
     </div>
     
     <div class="content-grid">
       <div class="chart-card">
-        <h3>Sentiment Distribution</h3>
+        <h3>Conversation Tone</h3>
         <canvas ref="sentimentChart"></canvas>
       </div>
       
       <div class="recent-calls-card">
-        <h3>Recent Calls</h3>
+        <h3>Recent Patient Calls</h3>
         <div v-if="loading" class="loading">
           <div class="spinner"></div>
-          <p>Loading...</p>
+          <p>Loading outreach results...</p>
         </div>
         <div v-else-if="stats.recentCalls.length === 0" class="no-data">
           <div class="empty-icon">📭</div>
-          <p>No calls yet</p>
-          <small>Start a campaign to see results here</small>
+          <p>No patient calls yet</p>
+          <small>Start an outreach program to see results here.</small>
         </div>
         <div v-else class="calls-list">
           <div v-for="call in stats.recentCalls.slice(0, 5)" :key="call.id" class="call-item">
             <div class="call-info">
-              <div class="call-patient">{{ call.patient_name }}</div>
+              <div class="call-patient">{{ call.patient_name || 'Unknown patient' }}</div>
               <div class="call-meta">
                 <span class="call-campaign">{{ call.campaign_name }}</span>
                 <span class="call-date">{{ formatDate(call.created_at) }}</span>
               </div>
             </div>
             <div class="call-status">
-              <span :class="'sentiment-badge ' + call.sentiment">
-                {{ call.sentiment }}
+              <span :class="'tone-badge ' + toneClass(call.sentiment, call)">
+                {{ formatConversationTone(call.sentiment, call) }}
               </span>
-              <span class="confirmed-badge" :class="{ confirmed: call.appointment_confirmed }">
-                {{ call.appointment_confirmed ? '✓ Confirmed' : '○ Pending' }}
+              <span class="outcome-badge" :class="recentCallOutcomeClass(call)">
+                {{ formatRecentCallOutcome(call) }}
               </span>
             </div>
-            <button @click="viewCall(call.id)" class="btn-view">View</button>
+            <button @click="viewCall(call.id)" class="btn-view">Open</button>
           </div>
         </div>
       </div>
@@ -84,6 +84,12 @@
 <script>
 import api from '../api.js';
 import { Chart, registerables } from 'chart.js';
+import {
+  formatConversationTone,
+  formatRecentCallOutcome,
+  recentCallOutcomeClass,
+  toneClass
+} from '../displayLabels.js';
 
 Chart.register(...registerables);
 
@@ -94,6 +100,7 @@ export default {
       stats: {
         totalCampaigns: 0,
         totalCalls: 0,
+        requiresFollowup: 0,
         confirmedAppointments: 0,
         sentimentBreakdown: {
           positive: 0,
@@ -111,6 +118,10 @@ export default {
     this.renderChart();
   },
   methods: {
+    formatConversationTone,
+    formatRecentCallOutcome,
+    recentCallOutcomeClass,
+    toneClass,
     async loadStats() {
       try {
         const response = await api.get('/stats');
@@ -131,7 +142,7 @@ export default {
       this.chart = new Chart(ctx, {
         type: 'doughnut',
         data: {
-          labels: ['Positive', 'Neutral', 'Negative'],
+          labels: ['Positive', 'No clear response', 'Concern raised'],
           datasets: [{
             data: [
               this.stats.sentimentBreakdown.positive,
@@ -379,30 +390,29 @@ export default {
   align-items: center;
 }
 
-.sentiment-badge {
+.tone-badge {
   padding: 0.25rem 0.75rem;
   border-radius: 12px;
   font-size: 0.75rem;
   font-weight: 600;
-  text-transform: capitalize;
 }
 
-.sentiment-badge.positive {
+.tone-badge.positive {
   background: #d1fae5;
   color: #065f46;
 }
 
-.sentiment-badge.neutral {
+.tone-badge.neutral {
   background: #fef3c7;
   color: #92400e;
 }
 
-.sentiment-badge.negative {
+.tone-badge.negative {
   background: #fee2e2;
   color: #991b1b;
 }
 
-.confirmed-badge {
+.outcome-badge {
   padding: 0.25rem 0.75rem;
   border-radius: 12px;
   font-size: 0.75rem;
@@ -411,9 +421,21 @@ export default {
   color: #6b7280;
 }
 
-.confirmed-badge.confirmed {
+.outcome-badge.confirmed,
+.outcome-badge.completed {
   background: #d1fae5;
   color: #065f46;
+}
+
+.outcome-badge.followup,
+.outcome-badge.in-progress {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.outcome-badge.not-reached {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 .btn-view {

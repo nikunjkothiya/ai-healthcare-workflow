@@ -1,19 +1,19 @@
 <template>
   <div class="call-links">
     <div class="header">
-      <h1>📱 Patient Call Links</h1>
+      <h1>Patient Call Links</h1>
       <p class="subtitle">{{ subtitleText }}</p>
     </div>
 
     <div class="instructions">
-      <h3>How to Test:</h3>
+      <h3>How to Test</h3>
       <ol>
-        <li>Start a campaign from the Campaigns page</li>
+        <li>Start an outreach program from the Outreach page</li>
         <li>Open patient links below in different browsers/tabs</li>
-        <li>When AI calls, you'll see incoming call screen</li>
+        <li>When the call starts, the incoming call screen appears</li>
         <li>Click "Accept" to answer like a real patient</li>
-        <li>Have natural conversation with AI agent</li>
-        <li>View full transcript and analysis after call ends</li>
+        <li>Have a natural conversation with the care assistant</li>
+        <li>Review the call summary after the call ends</li>
       </ol>
     </div>
 
@@ -67,10 +67,10 @@
     </div>
 
     <div class="quick-test">
-      <h3>Quick Test - Open All Patients</h3>
-      <p>Opens call screens for all available patients in new tabs</p>
+      <h3>Quick Test</h3>
+      <p>Open call screens for all available patients in new tabs.</p>
       <button @click="openAllLinks" class="btn-open-all">
-        🚀 Open All Patient Screens
+        Open All Patient Screens
       </button>
     </div>
   </div>
@@ -90,9 +90,9 @@ export default {
   computed: {
     subtitleText() {
       if (this.campaignId) {
-        return `Campaign ${this.campaignId} patient links. Open each link in a separate tab/browser.`;
+        return `Outreach ${this.campaignId} patient links. Open each link in a separate tab/browser.`;
       }
-      return 'Open each link in a separate browser/tab to simulate patient phones';
+      return 'Open each link in a separate browser/tab to test patient phones.';
     }
   },
   async mounted() {
@@ -149,7 +149,7 @@ export default {
     copyLink(patientId) {
       const link = this.getCallLink(patientId);
       navigator.clipboard.writeText(link);
-      this.$toastSuccess('Link copied! Open in a new browser/tab to simulate patient phone.');
+      this.$toastSuccess('Patient call link copied.');
     },
     openLink(patientId) {
       const link = this.getCallLink(patientId);
@@ -390,4 +390,3 @@ export default {
   }
 }
 </style>
-

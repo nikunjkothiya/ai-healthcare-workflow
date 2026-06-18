@@ -26,14 +26,17 @@ gemini-api-keys
 
 # Docker volumes
 postgres_data/
-ollama_data/
 
 # AI model binaries (see models/README.md for download instructions)
+models/tts/
 models/**/*.bin
 models/**/*.gguf
+models/**/*.onnx
+models/**/*.pt
+models/**/*.pth
 models/**/*.pth.tar
 models/**/*.tar
+models/**/*.safetensors
 !models/**/README.md
 models/**/config.json
 !models/README.md
-
