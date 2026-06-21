@@ -26,51 +26,47 @@ cp .env.example .env
 
 Review `.env` and adjust if needed. The defaults work out-of-the-box.
 
+### LiveKit & WebRTC Configuration
+The environment variables for LiveKit WebRTC server integration are also configured in `.env` and map seamlessly through Docker:
+```bash
+LIVEKIT_URL=ws://localhost:7800
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=devsecret
+VITE_WS_URL=ws://localhost:4000
+```
+These values can be edited directly in `.env` if you choose to connect to a self-hosted or cloud-based production LiveKit instance.
+
 ---
 
 ## 3. Setting Up AI Models
 
-All large AI model files live in the `models/` directory. Each subfolder has its own README with detailed instructions.
+All large AI model files live in the `models/` directory.
 
-Model assets are not committed to git in this project.
-Only `README.md` files are tracked under `models/`, so each user must place model files locally in the correct folders.
+Model assets are not committed to git in this project. Only `README.md` files are tracked under `models/`.
 
 > **Note:** OpenRouter is the only LLM provider for this setup.
-> Only the Whisper and Silero VAD local model files are required; Kokoro TTS runs from its Docker image.
+> The only local model files needed are for Whisper STT. Kokoro TTS runs natively in its Docker image, and VAD is handled inside the LiveKit agent container.
 
-> **IMPORTANT — Host vs Container paths:**
-> The `.env` file uses **container paths** (inside Docker), not host paths.
-> Docker mounts transform your local directories into container paths:
+> **IMPORTANT — Automated Setup:**
+> The `.env` file uses **container paths** (inside Docker). Local host directories are mapped into container directories on startup:
 >
 > | Host Directory      | Container Mount Point |       Used By     |
 > |---------------------|-----------------------|-------------------|
 > | `./models/whisper/` |   `/models/whisper/`  | Whisper container |
-> | `./models/vad/`     |   `/models/vad/`      | Backend/worker    |
 >
-> So `WHISPER_MODEL_PATH=/models/whisper/ggml-small.en-q5_1.bin` in `.env` maps to `./models/whisper/ggml-small.en-q5_1.bin` on your machine.
+> **Automatic Setup**: Our startup environment **automatically checks and downloads** the default Whisper GGML model (`ggml-small.en-q5_1.bin`) on its first run if it is missing on the host. This means you do NOT need to perform any manual download steps.
 
 ### A. Whisper (Speech-to-Text)
 
 See: [`models/whisper/README.md`](./models/whisper/README.md)
 
+On startup, if the model file is not found at `models/whisper/ggml-small.en-q5_1.bin`, the `./start.sh` script or the `whisper` Docker container will download it automatically. You can also manually download it if preferred:
 ```bash
-# Download the recommended low-hardware model (~181MB)
 wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin \
   -O models/whisper/ggml-small.en-q5_1.bin
 ```
 
 Verify `.env` has: `WHISPER_MODEL_PATH=/models/whisper/ggml-small.en-q5_1.bin`
-
-### A1. Silero VAD Model
-
-See: [`models/vad/README.md`](./models/vad/README.md)
-
-```bash
-wget https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad_op18_ifless.onnx \
-  -O models/vad/silero_vad_op18_ifless.onnx
-```
-
-Verify `.env` has: `VAD_MODEL_PATH=/models/vad/silero_vad_op18_ifless.onnx`
 
 ### B. Kokoro TTS (Text-to-Speech)
 
@@ -82,7 +78,7 @@ KOKORO_VOICE=af_bella
 KOKORO_LANG=en-us
 ```
 
-Docker pulls the pinned public CPU image `ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.2`.
+Docker pulls the pinned public CPU image `ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.2`. No manual model files are required.
 
 ### C. LLM — OpenRouter API (Primary, Default)
 
@@ -90,14 +86,13 @@ Set in `.env`:
 ```bash
 LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=your_real_openrouter_key_here
-OPENROUTER_MODEL=openrouter/free
+OPENROUTER_MODEL=google/gemma-4-31b-it:free
 OPENROUTER_HTTP_REFERER=http://localhost:3000
 OPENROUTER_APP_TITLE=Care Outreach Assistant
 ```
 
-No local LLM model files needed — all LLM inference runs via OpenRouter's OpenAI-compatible chat completions API. The default `openrouter/free` slug routes requests to currently available free model variants.
+No local LLM model files needed — all LLM inference runs via OpenRouter's OpenAI-compatible chat completions API. The default routes requests to available free model variants.
 `OPENROUTER_HTTP_REFERER` is an OpenRouter attribution header, not a backend routing URL. Keep `http://localhost:3000` for local Docker, and use your deployed frontend URL in production.
-For healthcare validation, test and pin an explicit `:free` model when possible because `openrouter/free` is a no-cost router, not a fixed model.
 Get your API key from [OpenRouter](https://openrouter.ai/keys).
 
 ---
@@ -113,7 +108,7 @@ Wait for all containers to be healthy:
 docker ps
 ```
 
-You should see 7 containers: `frontend`, `backend`, `worker`, `postgres`, `redis`, `whisper`, `tts` — all `Up (healthy)`.
+You should see 9 containers: `healthcare_frontend`, `healthcare_backend`, `healthcare_worker`, `healthcare_db`, `healthcare_redis`, `healthcare_whisper`, `healthcare_kokoro`, `healthcare_livekit`, and `healthcare_livekit_agent` — all `Up (healthy)`.
 
 - **Dashboard**: [http://localhost:3000](http://localhost:3000)
 - **API**: [http://localhost:4000](http://localhost:4000)
@@ -192,16 +187,15 @@ VERIFY_CALL_MODE=websocket ./verify.sh
 ## 8. Project Structure (Key Directories)
 
 ```text
-AI-Caller-Healthcare/
+AI-CallerAI-Healthcare-Workflow/
 |-- models/                    # AI model files (mounted into containers)
 |   |-- whisper/               # Whisper GGML models -> mounted at /models/whisper/
 |   |   |-- ggml-small.en-q5_1.bin
 |   |   `-- README.md
-|   |-- vad/                   # Silero VAD ONNX model -> mounted at /models/vad/
-|   |   |-- silero_vad_op18_ifless.onnx
-|   |   `-- README.md
 |   `-- README.md
 |-- ai/whisper/Dockerfile      # Whisper container build file
+|-- livekit-agent/             # Python LiveKit WebRTC Voice Agent
+|-- livekit.yaml               # LiveKit local server configuration
 |-- backend/                   # Express API + orchestrator
 |-- worker/                    # BullMQ job processor
 |-- frontend/                  # Vue 3 dashboard

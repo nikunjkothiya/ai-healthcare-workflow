@@ -96,45 +96,40 @@ REDIS_PORT=6379
 JWT_SECRET=supersecret_change_in_production
 LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=YOUR_OPENROUTER_API_KEY_HERE
-OPENROUTER_MODEL=openrouter/free
+OPENROUTER_MODEL=google/gemma-4-31b-it:free
 OPENROUTER_HTTP_REFERER=http://localhost:3000
 OPENROUTER_APP_TITLE=Care Outreach Assistant
-LLM_TIMEOUT_MS=15000
-LLM_MAX_RETRIES=1
-LLM_RETRY_DELAY_MS=800
-LLM_REALTIME_TIMEOUT_MS=8000
-LLM_REALTIME_MAX_RETRIES=0
-LLM_FAILURE_HANDOFF=true
+LLM_MAX_TOKENS=150
+LLM_NUM_CTX=1024
+LLM_MAX_TOKENS_ANALYSIS=768
+LLM_NUM_CTX_ANALYSIS=4096
+LLM_TIMEOUT_MS=30000
+LLM_REALTIME_TIMEOUT_MS=30000
+LLM_ANALYSIS_TIMEOUT_MS=120000
+ANALYSIS_MODEL_WAIT_TIMEOUT_MS=180000
+LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS=18000
+LIVEKIT_URL=ws://localhost:7800
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=devsecret
+WHISPER_HOST=whisper
+WHISPER_PORT=9000
+WHISPER_MODEL_PATH=/models/whisper/ggml-small.en-q5_1.bin
+KOKORO_HOST=kokoro
+KOKORO_PORT=8880
+KOKORO_VOICE=af_bella
+KOKORO_LANG=en-us
 WORKER_CONCURRENCY=1
 CALL_SPACING_MS=15000
 RING_TIMEOUT_MS=30000
 WEBSOCKET_CALL_MAX_WAIT_MS=720000
 POST_CALL_ANALYSIS_MAX_WAIT_MS=90000
-WHISPER_HOST=whisper
-WHISPER_PORT=9000
-WHISPER_MODEL_PATH=/models/whisper/ggml-small.en-q5_1.bin
-STT_CHUNK_MS=2500
-STT_REALTIME_CHUNK_MS=8000
-STT_REALTIME_SPLIT=false
-STT_REALTIME_SPLIT_THRESHOLD_MS=15000
-STT_SILENCE_MS=500
-VAD_MODEL_PATH=/models/vad/silero_vad_op18_ifless.onnx
-KOKORO_HOST=kokoro
-KOKORO_PORT=8880
-KOKORO_VOICE=af_bella
-KOKORO_LANG=en-us
 MAX_CALL_DURATION_MS=600000
 MAX_CONVERSATION_TURNS=30
-MAX_RUNTIME_RAM_GB=14
-ASSISTANT_SPEECH_GUARD_MS=350
-REQUIRE_SERVER_TTS=true
-VITE_REQUIRE_SERVER_TTS=true
-VITE_VAD_SPEECH_THRESHOLD=0.007
-VITE_VAD_SILENCE_THRESHOLD=0.0035
-VITE_VAD_MIN_SPEECH_MS=300
-VITE_VAD_END_SILENCE_MS=650
-VITE_VAD_MAX_UTTERANCE_MS=8000
 NODE_ENV=production
+PORT=4000
+CORS_ORIGIN=*
+VITE_API_URL=http://localhost:4000
+VITE_WS_URL=ws://localhost:4000
 EOF
     success ".env file created"
     warning "⚠ Update OPENROUTER_API_KEY in .env before starting!"
@@ -207,15 +202,42 @@ fi
 HOST_WHISPER_MODEL_PATH=$(resolve_model_host_path "$WHISPER_MODEL_PATH" "/models/whisper/" "./models/whisper/")
 
 info "Checking local Whisper model file..."
-assert_local_file "Whisper model" "$HOST_WHISPER_MODEL_PATH" "Place Whisper GGML files under ./models/whisper and update WHISPER_MODEL_PATH in .env."
-success "Local Whisper model file is ready"
+if [ ! -f "$HOST_WHISPER_MODEL_PATH" ]; then
+    info "Whisper model not found at '$HOST_WHISPER_MODEL_PATH'. Downloading it automatically..."
+    mkdir -p "$(dirname "$HOST_WHISPER_MODEL_PATH")"
+    if command -v wget &> /dev/null; then
+        wget -q --show-progress -O "$HOST_WHISPER_MODEL_PATH" https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin
+    elif command -v curl &> /dev/null; then
+        curl -L -o "$HOST_WHISPER_MODEL_PATH" https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin
+    else
+        warning "Neither wget nor curl found. Docker Compose will attempt to download the model on startup."
+    fi
+fi
+
+if [ -f "$HOST_WHISPER_MODEL_PATH" ]; then
+    success "Local Whisper model file is ready"
+else
+    warning "Whisper model file is not present locally on host, but we will let the Docker container download it automatically on startup."
+fi
 
 VAD_MODEL_PATH=$(get_env_value "VAD_MODEL_PATH")
 if [ -n "$VAD_MODEL_PATH" ]; then
     HOST_VAD_MODEL_PATH=$(resolve_model_host_path "$VAD_MODEL_PATH" "/models/vad/" "./models/vad/")
     info "Checking local Silero VAD model file..."
-    assert_local_file "Silero VAD model" "$HOST_VAD_MODEL_PATH" "Place Silero ONNX files under ./models/vad and update VAD_MODEL_PATH in .env."
-    success "Local Silero VAD model file is ready"
+    if [ ! -f "$HOST_VAD_MODEL_PATH" ]; then
+        info "Silero VAD model not found at '$HOST_VAD_MODEL_PATH'. Downloading it automatically..."
+        mkdir -p "$(dirname "$HOST_VAD_MODEL_PATH")"
+        if command -v wget &> /dev/null; then
+            wget -q --show-progress -O "$HOST_VAD_MODEL_PATH" https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad_op18_ifless.onnx
+        elif command -v curl &> /dev/null; then
+            curl -L -o "$HOST_VAD_MODEL_PATH" https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad_op18_ifless.onnx
+        fi
+    fi
+    if [ -f "$HOST_VAD_MODEL_PATH" ]; then
+        success "Local Silero VAD model file is ready"
+    else
+        warning "Could not download Silero VAD model. Ensure it is placed at '$HOST_VAD_MODEL_PATH' if you intend to use it."
+    fi
 fi
 
 section "STEP 2B: Validating TTS Configuration"

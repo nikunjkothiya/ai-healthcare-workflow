@@ -494,7 +494,7 @@ dead_letter_queue (
 
 ---
 
-## Configuration
+### Configuration
 
 ### Environment Variables (.env)
 
@@ -518,75 +518,77 @@ LLM_PROVIDER=openrouter
 
 # OpenRouter API (default LLM)
 OPENROUTER_API_KEY=YOUR_OPENROUTER_API_KEY_HERE
-OPENROUTER_MODEL=openrouter/free
+OPENROUTER_MODEL=google/gemma-4-31b-it:free
 OPENROUTER_HTTP_REFERER=http://localhost:3000
 OPENROUTER_APP_TITLE=Care Outreach Assistant
-LLM_TIMEOUT_MS=15000
-LLM_MAX_RETRIES=1
-LLM_RETRY_DELAY_MS=800
-LLM_REALTIME_TIMEOUT_MS=8000
-LLM_REALTIME_MAX_RETRIES=0
-LLM_FAILURE_HANDOFF=true
+
+# LLM tuning
+LLM_MAX_TOKENS=150
+LLM_NUM_CTX=1024
+LLM_MAX_TOKENS_ANALYSIS=768
+LLM_NUM_CTX_ANALYSIS=4096
+LLM_TIMEOUT_MS=30000
+LLM_REALTIME_TIMEOUT_MS=30000
+LLM_ANALYSIS_TIMEOUT_MS=120000
+ANALYSIS_MODEL_WAIT_TIMEOUT_MS=180000
+LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS=18000
+
+# LiveKit Configuration
+LIVEKIT_URL=ws://localhost:7800
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=devsecret
 
 # STT (Whisper)
 WHISPER_HOST=whisper
 WHISPER_PORT=9000
 WHISPER_MODEL_PATH=/models/whisper/ggml-small.en-q5_1.bin
-STT_CHUNK_MS=2500
-STT_REALTIME_CHUNK_MS=8000
-STT_REALTIME_SPLIT=false
-STT_REALTIME_SPLIT_THRESHOLD_MS=15000
-STT_SILENCE_MS=500
-VAD_MODEL_PATH=/models/vad/silero_vad_op18_ifless.onnx
 
 # TTS (Kokoro)
 KOKORO_HOST=kokoro
 KOKORO_PORT=8880
 KOKORO_VOICE=af_bella
 KOKORO_LANG=en-us
-MAX_CALL_DURATION_MS=600000
-MAX_CONVERSATION_TURNS=30
-MAX_RUNTIME_RAM_GB=14
-ASSISTANT_SPEECH_GUARD_MS=350
-REQUIRE_SERVER_TTS=true
-VITE_REQUIRE_SERVER_TTS=true
-VITE_VAD_MIN_SPEECH_MS=300
-VITE_VAD_END_SILENCE_MS=650
-VITE_VAD_MAX_UTTERANCE_MS=8000
 
-# Worker
+# Worker / Orchestrator
 WORKER_CONCURRENCY=1
 CALL_SPACING_MS=15000
 RING_TIMEOUT_MS=30000
 WEBSOCKET_CALL_MAX_WAIT_MS=720000
 POST_CALL_ANALYSIS_MAX_WAIT_MS=90000
 
+# Call Limits
+MAX_CALL_DURATION_MS=600000
+MAX_CONVERSATION_TURNS=30
+
 # App
 NODE_ENV=production
 PORT=4000
+CORS_ORIGIN=*
+VITE_API_URL=http://localhost:4000
+VITE_WS_URL=ws://localhost:4000
 ```
 
 ### AI Models Configuration (Local Directory)
 
-All large AI model binaries are now served via local bind mounts to avoid re-downloading during Docker builds. See [models/README.md](./models/README.md) for detailed instructions on adding or swapping models.
-Only `README.md` files are committed under `models/`; model assets must be provided locally by each user.
+Large AI model binaries are managed automatically via local bind mounts. On first startup, the `./start.sh` script or the Whisper container's entrypoint will **automatically download** the recommended Whisper STT model if it is missing from the `models/whisper/` folder.
+
+Only `README.md` files are committed under `models/`; model assets are ignored in git and managed automatically by the environment.
 
 **Whisper (STT):**
 - Default Model: `models/whisper/ggml-small.en-q5_1.bin` (~181MB quantized)
+- **Automated Setup:** If the model file is not found, the system downloads it automatically from Hugging Face on startup.
 - Live calls: browser VAD sends one complete utterance after ~650ms of silence; backend realtime splitting is disabled by default to avoid duplicate Whisper work
 - Batch/offline transcription still uses `STT_CHUNK_MS` chunking where needed
 - Runs in Docker container via `whisper-server` on port `9000` (`/inference`)
 - Frontend `MobileCall` uses a client-side VAD + utterance buffer so only speech segments (not raw streaming audio) are encoded to WAV and sent as `audio_chunk`s to the backend, which reduces STT load and latency
-- Silero VAD model file: `models/vad/silero_vad_op18_ifless.onnx` is available for server-side VAD integration after timing tests
 - **No model downloads during build** — model is mounted to `/models/whisper/` inside container.
 
 **OpenRouter API (Default LLM):**
 - Only supported LLM provider — set `LLM_PROVIDER=openrouter` in `.env`
-- Uses `OPENROUTER_MODEL=openrouter/free` by default, which routes to currently available free OpenRouter model variants
+- Uses `OPENROUTER_MODEL=google/gemma-4-31b-it:free` by default
 - Requires `OPENROUTER_API_KEY`
 - `OPENROUTER_HTTP_REFERER` is only sent as OpenRouter's `HTTP-Referer` attribution header. Use `http://localhost:3000` for local development and your deployed frontend URL in production.
 - `OPENROUTER_APP_TITLE` is sent as `X-OpenRouter-Title`
-- `openrouter/free` is useful for no-billing development, but it is a router, not one fixed model. For validated healthcare behavior, prefer an explicit `:free` model once you have tested one with your call scripts.
 - No local LLM model files needed — all LLM inference runs through OpenRouter's OpenAI-compatible chat completions API
 - Optional per-stage overrides: `OPENROUTER_MODEL_CHAT`, `OPENROUTER_MODEL_REALTIME`, `OPENROUTER_MODEL_DECISION`, `OPENROUTER_MODEL_ANALYSIS`
 - Supports 6 campaign-type-specific prompt templates

@@ -1,0 +1,9 @@
+keys:
+  devkey: devsecret
+
+port: 7800
+
+rtc:
+  use_external_ip: false
+  port_range_start: 50000
+  port_range_end: 50050

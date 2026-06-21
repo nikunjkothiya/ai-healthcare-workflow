@@ -140,6 +140,7 @@
 
 <script>
 import { formatCallState } from '../displayLabels.js';
+import { Room, RoomEvent } from 'livekit-client';
 
 export default {
   name: 'MobileCall',
@@ -151,10 +152,8 @@ export default {
       patient: null,
       linkStatus: null,
       ws: null,
-      mediaRecorder: null,
-      audioContext: null,
+      room: null,
       isMuted: false,
-      isRecording: false,
       timerInterval: null,
       testLink: '',
       patientId: null,
@@ -167,19 +166,16 @@ export default {
       ringCountdownInterval: null,
       turnState: 'assistant', // assistant | patient
       assistantSpeaking: false,
-      currentAudio: null,
       statusTitle: '',
       statusMessage: '',
       statusVariant: 'neutral',
       statusIcon: 'i',
-      invalidMessage: 'This call link is invalid or expired.',
-      requireServerTts: String(import.meta.env.VITE_REQUIRE_SERVER_TTS || 'false').toLowerCase() === 'true'
+      invalidMessage: 'This call link is invalid or expired.'
     };
   },
   computed: {
     showListeningIndicator() {
       return this.callState === 'active' &&
-        this.isRecording &&
         this.turnState === 'patient' &&
         !this.assistantSpeaking &&
         !this.isMuted;
@@ -232,8 +228,10 @@ export default {
     if (this.ws) {
       this.ws.close();
     }
-    this.stopAssistantSpeech();
-    this.stopRecording();
+    if (this.room) {
+      this.room.disconnect();
+      this.room = null;
+    }
   },
   methods: {
     formatCallState,
@@ -248,11 +246,6 @@ export default {
       const id = Number.parseInt(value, 10);
       return Number.isInteger(id) && id > 0 ? id : null;
     },
-    readEnvNumber(name, fallback) {
-      const raw = import.meta.env[name];
-      const parsed = Number(raw);
-      return Number.isFinite(parsed) ? parsed : fallback;
-    },
     closeSocket() {
       if (this.ws) {
         this.ws.close();
@@ -263,8 +256,10 @@ export default {
     setInvalidCallUrl(message) {
       this.stopRingtone();
       this.stopRingCountdown();
-      this.stopAssistantSpeech();
-      this.stopRecording();
+      if (this.room) {
+        this.room.disconnect();
+        this.room = null;
+      }
       this.closeSocket();
       this.incomingReady = false;
       this.invalidMessage = message || 'This call link is invalid or expired.';
@@ -292,8 +287,10 @@ export default {
 
       this.stopRingtone();
       this.stopRingCountdown();
-      this.stopAssistantSpeech();
-      this.stopRecording();
+      if (this.room) {
+        this.room.disconnect();
+        this.room = null;
+      }
       this.closeSocket();
       this.incomingReady = false;
       this.callState = 'status';
@@ -431,33 +428,6 @@ export default {
         return;
       }
 
-      if (data.type === 'ai_response' || data.type === 'ai_audio') {
-        const transcript = this.cleanDisplayText(data.transcript || '');
-        if (transcript) {
-          this.conversation.push({
-            role: 'assistant',
-            text: transcript,
-            timestamp: new Date().toLocaleTimeString()
-          });
-        }
-        this.handleAssistantResponse(data).catch((error) => {
-          console.error('Assistant response handling failed:', error);
-        });
-        return;
-      }
-
-      if (data.type === 'user_speech') {
-        const transcript = this.cleanDisplayText(data.transcript);
-        if (transcript) {
-          this.conversation.push({
-            role: 'user',
-            text: transcript,
-            timestamp: new Date().toLocaleTimeString()
-          });
-        }
-        return;
-      }
-
       if (data.type === 'call_ended') {
         this.handleCallEnd(data);
         return;
@@ -469,63 +439,8 @@ export default {
         this.callState = 'ended';
         return;
       }
-
-      if (data.type === 'audio_warning') {
-        console.warn('Audio warning:', data.message);
-        if (this.callState === 'active' && !this.assistantSpeaking) {
-          this.turnState = 'patient';
-          this.incomingStatusText = data.message || 'Could not hear clearly. Please speak again.';
-        }
-        return;
-      }
-    },
-    isPatientTurn() {
-      return this.callState === 'active' &&
-        this.turnState === 'patient' &&
-        !this.assistantSpeaking &&
-        !this.isMuted;
-    },
-    calculateRms(frame) {
-      if (!frame || frame.length === 0) return 0;
-      let sum = 0;
-      for (let i = 0; i < frame.length; i++) {
-        const sample = frame[i];
-        sum += sample * sample;
-      }
-      return Math.sqrt(sum / frame.length);
-    },
-    async handleAssistantResponse(data) {
-      const transcript = this.cleanDisplayText(data.transcript || '');
-      this.turnState = 'assistant';
-      this.assistantSpeaking = true;
-      this.incomingStatusText = 'AI is speaking...';
-
-      if (data.data) {
-        await this.playAudio(data.data);
-      } else if (transcript && !this.requireServerTts) {
-        await this.speakAssistantText(transcript);
-      } else if (transcript && this.requireServerTts) {
-        console.error('Expected ai_audio in production mode but received ai_response');
-        this.$toastError('Voice service unavailable. Please retry the call.');
-        this.handleCallEnd(data);
-        return;
-      }
-
-      this.assistantSpeaking = false;
-
-      if (data.shouldEnd) {
-        setTimeout(() => this.handleCallEnd(data), 2000);
-        return;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      if (this.callState === 'active') {
-        this.turnState = 'patient';
-        this.incomingStatusText = 'Listening... Speak now.';
-      }
     },
     playRingtone() {
-      // Create a simple ringtone using Web Audio API
       try {
         if (this.ringtoneInterval) return;
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -540,7 +455,6 @@ export default {
         
         oscillator.start();
         
-        // Stop after 2 seconds and repeat
         this.ringtoneInterval = setInterval(() => {
           if (this.callState === 'incoming') {
             oscillator.frequency.value = 440;
@@ -618,21 +532,13 @@ export default {
         return;
       }
 
-      try {
-        await this.connectWebSocket();
-      } catch (error) {
-        console.error('Failed to connect WebSocket:', error);
-        this.$toastError('Connection error. Please try again.');
-        return;
-      }
-
       this.stopRingtone();
       this.stopRingCountdown();
       this.callState = 'active';
       this.callDuration = 0;
       this.conversation = [];
       this.incomingReady = false;
-      this.incomingStatusText = 'AI is preparing the greeting...';
+      this.incomingStatusText = 'Connecting to WebRTC session...';
       this.turnState = 'assistant';
       this.assistantSpeaking = false;
       
@@ -641,186 +547,123 @@ export default {
         this.callDuration++;
       }, 1000);
 
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({
-          type: 'start_call',
-          patientId: this.patientId
-        }));
-      }
-
-      await this.startRecording();
+      // Join the WebRTC room!
+      await this.joinLiveKitRoom();
     },
-    async startRecording() {
-      if (this.isRecording) return;
-
+    async joinLiveKitRoom() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          audio: {
-            channelCount: 1,
-            sampleRate: 16000
-          } 
-        });
+        const roomName = `call_${this.linkStatus?.latestCall?.id}`;
+        const identityName = `patient_${this.patientId}`;
         
-        this.isRecording = true;
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        this.audioContext = new AudioCtx({ sampleRate: 16000 });
-        await this.audioContext.audioWorklet.addModule(
-          new URL('../worklets/pcmCaptureProcessor.js', import.meta.url)
+        // 1. Fetch token from backend
+        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+        const response = await fetch(
+          `${apiUrl}/patients/public/livekit/token?room=${roomName}&identity=${identityName}`
         );
-
-        const source = this.audioContext.createMediaStreamSource(stream);
-        const captureNode = new AudioWorkletNode(this.audioContext, 'pcm-capture-processor', {
-          numberOfInputs: 1,
-          numberOfOutputs: 1,
-          channelCount: 1
-        });
-        const silentGain = this.audioContext.createGain();
-        silentGain.gain.value = 0;
-
-        source.connect(captureNode);
-        captureNode.connect(silentGain);
-        silentGain.connect(this.audioContext.destination);
-
-        const sampleRate = this.audioContext.sampleRate || 16000;
-        const vadConfig = {
-          speechThreshold: this.readEnvNumber('VITE_VAD_SPEECH_THRESHOLD', 0.007),
-          silenceThreshold: this.readEnvNumber('VITE_VAD_SILENCE_THRESHOLD', 0.0035),
-          minSpeechMs: this.readEnvNumber('VITE_VAD_MIN_SPEECH_MS', 300),
-          endSilenceMs: this.readEnvNumber('VITE_VAD_END_SILENCE_MS', 650),
-          maxUtteranceMs: this.readEnvNumber('VITE_VAD_MAX_UTTERANCE_MS', 8000)
-        };
-
-        const state = {
-          active: false,
-          frames: [],
-          speechMs: 0,
-          silenceMs: 0,
-          totalMs: 0
-        };
-
-        const resetUtterance = () => {
-          state.active = false;
-          state.frames = [];
-          state.speechMs = 0;
-          state.silenceMs = 0;
-          state.totalMs = 0;
-        };
-
-        const flush = (allowSend = true) => {
-          if (!state.active || state.frames.length === 0) {
-            resetUtterance();
-            return;
-          }
-
-          const hasSpeech = state.speechMs >= vadConfig.minSpeechMs;
-          const canSend = allowSend &&
-            hasSpeech &&
-            this.isPatientTurn() &&
-            this.ws &&
-            this.ws.readyState === WebSocket.OPEN;
-
-          if (!canSend) {
-            resetUtterance();
-            return;
-          }
-
-          const audioData = this.encodeWAV(state.frames, sampleRate);
-          const base64Audio = this.arrayBufferToBase64(audioData);
-
-          this.ws.send(JSON.stringify({
-            type: 'audio_chunk',
-            data: base64Audio
-          }));
-
-          // Wait for the next AI turn before capturing more.
-          this.turnState = 'assistant';
-          this.incomingStatusText = 'AI is processing your response...';
-          resetUtterance();
-        };
-
-        captureNode.port.onmessage = (event) => {
-          const frame = new Float32Array(event.data);
-          if (!frame.length) return;
-
-          if (!this.isPatientTurn()) {
-            if (state.active) {
-              resetUtterance();
-            }
-            return;
-          }
-
-          const frameMs = (frame.length / sampleRate) * 1000;
-          const rms = this.calculateRms(frame);
-
-          if (!state.active) {
-            if (rms >= vadConfig.speechThreshold) {
-              state.active = true;
-              state.frames.push(frame);
-              state.speechMs += frameMs;
-              state.totalMs += frameMs;
-              state.silenceMs = 0;
-              this.incomingStatusText = 'Listening...';
-            }
-            return;
-          }
-
-          state.frames.push(frame);
-          state.totalMs += frameMs;
-
-          if (rms >= vadConfig.speechThreshold) {
-            state.speechMs += frameMs;
-            state.silenceMs = 0;
-          } else if (rms <= vadConfig.silenceThreshold) {
-            state.silenceMs += frameMs;
-          } else {
-            state.silenceMs = Math.max(0, state.silenceMs - frameMs * 0.5);
-          }
-
-          if (state.silenceMs >= vadConfig.endSilenceMs || state.totalMs >= vadConfig.maxUtteranceMs) {
-            flush(true);
-          }
-        };
+        const data = await response.json();
         
-        this.mediaRecorder = { stream, source, captureNode, silentGain, flush, resetUtterance };
+        if (!response.ok || !data.token) {
+          throw new Error(data.error || 'Failed to fetch LiveKit token');
+        }
+        
+        // 2. Initialize LiveKit Room
+        this.room = new Room({
+          adaptiveStream: true,
+          dynacast: true,
+          publishDefaults: {
+            audioPreset: {
+              maxBitrate: 32000
+            }
+          }
+        });
+        
+        // 3. Set up data event handlers
+        this.room.on(RoomEvent.DataReceived, (payload) => {
+          try {
+            const text = new TextDecoder().decode(payload);
+            const event = JSON.parse(text);
+            this.handleLiveKitAgentEvent(event);
+          } catch (error) {
+            console.error('Failed to parse LiveKit data message:', error);
+          }
+        });
+        
+        this.room.on(RoomEvent.Disconnected, () => {
+          console.log('Room disconnected');
+          this.handleCallEnd();
+        });
+        
+        this.room.on(RoomEvent.TrackSubscribed, (track) => {
+          if (track.kind === 'audio') {
+            console.log('Subscribed to agent audio track');
+            const element = track.attach();
+            document.body.appendChild(element);
+          }
+        });
+
+        this.room.on(RoomEvent.TrackUnsubscribed, (track) => {
+          if (track.kind === 'audio') {
+            console.log('Unsubscribed from agent audio track');
+            track.detach();
+          }
+        });
+
+        // 4. Connect to local LiveKit Server
+        const apiHost = new URL(apiUrl).hostname;
+        const livekitUrl = `ws://${apiHost}:7800`;
+        
+        await this.room.connect(livekitUrl, data.token);
+        console.log('Connected to LiveKit room:', roomName);
+        
+        // 5. Publish local microphone
+        await this.room.localParticipant.setMicrophoneEnabled(true);
+        console.log('Microphone published successfully');
+        
+        this.incomingStatusText = 'Connected. Agent joining...';
       } catch (error) {
-        console.error('Failed to start recording:', error);
-        this.$toastError('Microphone access denied. Please allow microphone access.');
-        this.resetCall();
+        console.error('LiveKit connection error:', error);
+        this.$toastError('Failed to establish WebRTC connection: ' + error.message);
+        this.handleCallEnd();
       }
     },
-    stopRecording() {
-      this.isRecording = false;
-      if (this.mediaRecorder) {
-        if (this.mediaRecorder.flush) {
-          this.mediaRecorder.flush(false);
+    handleLiveKitAgentEvent(event) {
+      if (event.type === 'state') {
+        if (event.value === 'agent_speaking') {
+          this.assistantSpeaking = true;
+          this.turnState = 'assistant';
+          this.incomingStatusText = 'AI is speaking...';
+        } else if (event.value === 'user_speaking') {
+          this.assistantSpeaking = false;
+          this.turnState = 'patient';
+          this.incomingStatusText = 'Listening...';
+        } else if (event.value === 'listening') {
+          this.assistantSpeaking = false;
+          this.turnState = 'patient';
+          this.incomingStatusText = 'Listening... Speak now.';
         }
-        if (this.mediaRecorder.resetUtterance) {
-          this.mediaRecorder.resetUtterance();
+      } else if (event.type === 'transcript') {
+        const role = event.role; // user or assistant
+        const text = this.cleanDisplayText(event.text || '');
+        if (text) {
+          this.conversation.push({
+            role: role,
+            text: text,
+            timestamp: new Date().toLocaleTimeString()
+          });
         }
-        if (this.mediaRecorder.source) {
-          this.mediaRecorder.source.disconnect();
-        }
-        if (this.mediaRecorder.captureNode) {
-          this.mediaRecorder.captureNode.port.onmessage = null;
-          this.mediaRecorder.captureNode.disconnect();
-        }
-        if (this.mediaRecorder.silentGain) {
-          this.mediaRecorder.silentGain.disconnect();
-        }
-        if (this.mediaRecorder.stream) {
-          this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
-        }
-        this.mediaRecorder = null;
-      }
-      if (this.audioContext) {
-        this.audioContext.close();
-        this.audioContext = null;
       }
     },
     toggleMute() {
       this.isMuted = !this.isMuted;
+      if (this.room && this.room.localParticipant) {
+        this.room.localParticipant.setMicrophoneEnabled(!this.isMuted);
+      }
     },
-    endCall() {
+    async endCall() {
+      if (this.room) {
+        await this.room.disconnect();
+        this.room = null;
+      }
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({
           type: 'end_call',
@@ -835,20 +678,17 @@ export default {
       this.turnState = 'assistant';
       this.assistantSpeaking = false;
       this.stopRingCountdown();
-      this.stopAssistantSpeech();
       
       if (this.timerInterval) {
         clearInterval(this.timerInterval);
       }
 
       this.stopRingtone();
-      
-      this.stopRecording();
-      
       this.closeSocket();
-      
-      // Data is saved to database by backend
-      // Patient doesn't see analysis - only hospital staff see it in dashboard
+      if (this.room) {
+        this.room.disconnect();
+        this.room = null;
+      }
     },
     resetCall() {
       if (this.timerInterval) {
@@ -859,11 +699,11 @@ export default {
         this.stopRingtone();
       }
       this.stopRingCountdown();
-      this.stopAssistantSpeech();
-
-      this.stopRecording();
-
       this.closeSocket();
+      if (this.room) {
+        this.room.disconnect();
+        this.room = null;
+      }
 
       this.callState = 'loading';
       this.callDuration = 0;
@@ -882,130 +722,12 @@ export default {
     },
     closeWindow() {
       window.close();
-      // If window.close() doesn't work (some browsers block it), show message
       setTimeout(() => {
         this.callState = 'loading';
         this.callDuration = 0;
         this.conversation = [];
         this.loadCallLinkContext();
       }, 100);
-    },
-    playAudio(base64Audio) {
-      return new Promise((resolve) => {
-        try {
-          const audioData = this.base64ToArrayBuffer(base64Audio);
-          const blob = new Blob([audioData], { type: 'audio/wav' });
-          const url = URL.createObjectURL(blob);
-          const audio = new Audio(url);
-          this.currentAudio = audio;
-
-          const finalize = () => {
-            URL.revokeObjectURL(url);
-            if (this.currentAudio === audio) {
-              this.currentAudio = null;
-            }
-            resolve();
-          };
-
-          audio.onended = finalize;
-          audio.onerror = finalize;
-
-          const playPromise = audio.play();
-          if (playPromise && typeof playPromise.catch === 'function') {
-            playPromise.catch((error) => {
-              console.warn('Audio playback failed:', error);
-              finalize();
-            });
-          }
-        } catch (error) {
-          console.warn('playAudio failed:', error);
-          resolve();
-        }
-      });
-    },
-    speakAssistantText(text) {
-      return new Promise((resolve) => {
-        if (!('speechSynthesis' in window) || !text) {
-          resolve();
-          return;
-        }
-
-        try {
-          window.speechSynthesis.cancel();
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.rate = 1.0;
-          utterance.pitch = 1.0;
-          utterance.onend = () => resolve();
-          utterance.onerror = () => resolve();
-          window.speechSynthesis.speak(utterance);
-        } catch (error) {
-          console.warn('Speech synthesis fallback failed:', error);
-          resolve();
-        }
-      });
-    },
-    stopAssistantSpeech() {
-      if (this.currentAudio) {
-        this.currentAudio.pause();
-        this.currentAudio = null;
-      }
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
-    },
-    encodeWAV(samples, sampleRate = 16000) {
-      const totalSamples = samples.reduce((sum, frame) => sum + frame.length, 0);
-      const buffer = new ArrayBuffer(44 + totalSamples * 2);
-      const view = new DataView(buffer);
-      
-      const numChannels = 1;
-      const bytesPerSample = 2;
-      
-      this.writeString(view, 0, 'RIFF');
-      view.setUint32(4, 36 + totalSamples * 2, true);
-      this.writeString(view, 8, 'WAVE');
-      this.writeString(view, 12, 'fmt ');
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true);
-      view.setUint16(22, numChannels, true);
-      view.setUint32(24, sampleRate, true);
-      view.setUint32(28, sampleRate * numChannels * bytesPerSample, true);
-      view.setUint16(32, numChannels * bytesPerSample, true);
-      view.setUint16(34, 16, true);
-      this.writeString(view, 36, 'data');
-      view.setUint32(40, totalSamples * 2, true);
-      
-      let offset = 44;
-      for (let i = 0; i < samples.length; i++) {
-        for (let j = 0; j < samples[i].length; j++) {
-          const s = Math.max(-1, Math.min(1, samples[i][j]));
-          view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-          offset += 2;
-        }
-      }
-      
-      return buffer;
-    },
-    writeString(view, offset, string) {
-      for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i));
-      }
-    },
-    arrayBufferToBase64(buffer) {
-      let binary = '';
-      const bytes = new Uint8Array(buffer);
-      for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      return btoa(binary);
-    },
-    base64ToArrayBuffer(base64) {
-      const binaryString = atob(base64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      return bytes.buffer;
     },
     formatDuration(seconds) {
       const mins = Math.floor(seconds / 60);

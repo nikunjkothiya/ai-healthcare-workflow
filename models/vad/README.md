@@ -1,35 +1,20 @@
-# Silero VAD Model
+# Silero VAD Model (Optional)
 
-Place local voice activity detection model files in this directory.
+This directory is an optional storage space for local Silero voice activity detection model files.
 
-## Current Model
+## Status: Optional / Automatic
 
-- `silero_vad_op18_ifless.onnx` - Silero VAD ONNX model for low-resource CPU inference.
+The production call flow uses client-side Voice Activity Detection (VAD) built into the browser/mobile client (`MobileCall.vue`) for the web client, and the standard LiveKit Agent leverages the `livekit-plugins-silero` library. 
 
-## How It Works
+The library automatically downloads, caches, and runs the Silero VAD model inside the container at runtime. You do not need to download this file manually.
 
-This folder is mounted into backend and worker containers as:
+## Manual Setup (If needed for custom pipelines)
 
-```text
-Host path:      ./models/vad/          ->  Container path: /models/vad/
-```
-
-The configured path is:
-
-```bash
-VAD_MODEL_PATH=/models/vad/silero_vad_op18_ifless.onnx
-```
-
-The current production call flow still uses the existing browser-side VAD plus backend RMS silence detection. This ONNX model is stored and validated so server-side Silero VAD can be enabled after call-timing tests, without changing the model placement again.
-
-## Download
+If you wish to host a local VAD file for custom extensions, you can download it here:
 
 ```bash
 wget https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad_op18_ifless.onnx \
   -O models/vad/silero_vad_op18_ifless.onnx
 ```
 
-## Git Tracking Policy
-
-Only this `README.md` is tracked from this folder.
-ONNX model files (`*.onnx`) are git-ignored and must be provided locally by each user.
+Only this `README.md` is tracked in git. All `*.onnx` files are ignored.

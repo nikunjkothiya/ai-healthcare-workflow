@@ -3,6 +3,8 @@ const multer = require('multer');
 const { parse } = require('csv-parse/sync');
 const { authenticateToken, requireHospitalAdmin } = require('../middleware/auth');
 const { query } = require('../services/database');
+const { AccessToken } = require('livekit-server-sdk');
+const postCallPipeline = require('../workflows/postCallPipeline');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -389,6 +391,136 @@ router.get('/by-category/:category', authenticateToken, requireHospitalAdmin, as
   } catch (error) {
     console.error('Get patients by category error:', error);
     res.status(500).json({ error: 'Failed to fetch patients' });
+  }
+});
+
+// Public LiveKit room token generator
+router.get('/public/livekit/token', async (req, res) => {
+  try {
+    const room = req.query.room;
+    const identity = req.query.identity;
+
+    if (!room || !identity) {
+      return res.status(400).json({ error: 'room and identity query params are required' });
+    }
+
+    // Transition call to in_progress and patient to calling when joining WebRTC
+    const callId = room.startsWith('call_') ? parseInt(room.split('_')[1], 10) : null;
+    if (callId) {
+      await query(
+        `UPDATE calls
+         SET state = 'in_progress',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [callId]
+      );
+      
+      const callRes = await query(`SELECT patient_id FROM calls WHERE id = $1`, [callId]);
+      if (callRes.rows.length > 0) {
+        await query(
+          `UPDATE patients
+           SET status = 'calling',
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [callRes.rows[0].patient_id]
+        );
+      }
+    }
+
+    const apiKey = process.env.LIVEKIT_API_KEY || 'devkey';
+    const apiSecret = process.env.LIVEKIT_API_SECRET || 'devsecret';
+
+    const at = new AccessToken(apiKey, apiSecret, {
+      identity: identity,
+      ttl: '1h'
+    });
+
+    at.addGrant({
+      roomJoin: true,
+      room: room,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true
+    });
+
+    const token = await at.toJwt();
+    res.json({ token });
+  } catch (error) {
+    console.error('Error generating LiveKit token:', error);
+    res.status(500).json({ error: 'Failed to generate token' });
+  }
+});
+
+// Public Webhook to complete call and start post-call pipeline
+router.post('/public/livekit/calls/:id/complete', async (req, res) => {
+  try {
+    const callId = parseInt(req.params.id, 10);
+    const { transcript } = req.body;
+
+    if (!callId) {
+      return res.status(400).json({ error: 'Invalid call ID' });
+    }
+
+    console.log(`LiveKit Agent completing call ${callId} with transcript...`);
+
+    // 1. Update calls table with the transcript and mark completed
+    await query(
+      `UPDATE calls
+       SET transcript = $1,
+           state = 'completed',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [transcript || '', callId]
+    );
+
+    // 2. Fetch patient details to update status
+    const callResult = await query(
+      `SELECT patient_id, campaign_id FROM calls WHERE id = $1`,
+      [callId]
+    );
+
+    if (callResult.rows.length > 0) {
+      const { patient_id, campaign_id } = callResult.rows[0];
+      
+      // Update patient status to completed
+      await query(
+        `UPDATE patients
+         SET status = 'completed',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [patient_id]
+      );
+
+      // Check if campaign is completed
+      if (campaign_id) {
+        const pendingCount = await query(
+          `SELECT COUNT(*) FROM patients
+           WHERE campaign_id = $1 AND status IN ('pending', 'queued', 'ringing')`,
+          [campaign_id]
+        );
+        if (parseInt(pendingCount.rows[0].count, 10) === 0) {
+          await query(
+            `UPDATE campaigns
+             SET status = 'completed',
+                 completed_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [campaign_id]
+          );
+        }
+      }
+    }
+
+    // 3. Trigger asynchronous post-call pipeline analysis
+    // (This parses the transcript using LLM and determines if appointment was confirmed, etc.)
+    postCallPipeline.process(callId).catch((err) => {
+      console.error(`Post-call pipeline error for call ${callId}:`, err);
+    });
+
+    res.json({ success: true, message: 'Call completed and post-call analysis started' });
+  } catch (error) {
+    console.error('Error completing LiveKit call:', error);
+    res.status(500).json({ error: 'Failed to complete call' });
   }
 });
 

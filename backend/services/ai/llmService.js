@@ -517,7 +517,10 @@ class LLMService {
           payload.stop = options.stop;
         }
 
-        if (options.json) {
+        // Free models on OpenRouter (e.g., google/gemma-4-31b-it:free) often return 429 "Provider returned error"
+        // when response_format JSON mode is requested. Since our parser _extractJsonObject is highly robust
+        // and handles raw text containing JSON, we omit response_format for all free-tier models.
+        if (options.json && typeof selectedModel === 'string' && !selectedModel.endsWith(':free')) {
           payload.response_format = { type: 'json_object' };
         }
 
@@ -932,7 +935,7 @@ ${transcript}`;
     return CAMPAIGN_PROMPTS[campaignType] || CAMPAIGN_PROMPTS.general_outreach;
   }
 
-  _buildCampaignRealtimePrompt(context = {}) {
+  _buildCampaignRealtimePrompt(context = {}, isStreaming = false) {
     const patient = context.patient || {};
     const patientMetadata = patient?.metadata && typeof patient.metadata === 'object'
       ? patient.metadata
@@ -990,7 +993,7 @@ ${transcript}`;
       factsGuideline = '';
     }
 
-    return `You are a healthcare assistant on a live phone call. Be warm, empathetic, and professional.
+    const basePrompt = `You are a healthcare assistant on a live phone call. Be warm, empathetic, and professional.
 
 TASK: ${campaignObjective}
 
@@ -1010,7 +1013,24 @@ GUIDELINES:
 - Never repeat yourself — check HISTORY before responding
 - Never provide medical diagnosis or treatment advice
 - Never mention you are an AI, a model, or a language model
-- Never output anything except the JSON object
+- Never output anything except the requested output format`;
+
+    if (isStreaming) {
+      return `${basePrompt}
+
+${conversationSummary ? `SUMMARY: ${conversationSummary}\n` : ''}
+HISTORY:
+${recentTurns}
+
+PATIENT: ${latestPatientMessage}
+
+Output format:
+First output the spoken reply prefixed with 'REPLY:'. Then output the separator '|| METADATA:' followed by a JSON object with keys: 'action', 'goal_status', 'risk_detected', 'confidence'.
+Example output:
+REPLY: Hello! How can I help you today? || METADATA: {"action": "continue", "goal_status": "pending", "risk_detected": false, "confidence": 0.9}`;
+    }
+
+    return `${basePrompt}
 
 ${conversationSummary ? `SUMMARY: ${conversationSummary}\n` : ''}
 HISTORY:
@@ -1046,6 +1066,184 @@ You MUST return ONLY a valid JSON object. No markdown, no explanation, no code f
     // Ensure spoken reply is always clean conversational text.
     result.reply = this._sanitizeConversationReply(result.reply, 'Thank you for sharing that.');
     return result;
+  }
+
+  async generateRealtimeTurnStream(context = {}, onSentenceCallback) {
+    const provider = await this._ensureProviderAvailable(this.getProviderForStage('realtime'), 'Realtime');
+    const prompt = this._buildCampaignRealtimePrompt(context, true);
+    const selectedModel = this.openRouterRealtimeModel;
+    const timeoutMs = parseInt(process.env.LLM_REALTIME_TIMEOUT_MS, 10) || 30000;
+
+    const headers = {
+      Authorization: `Bearer ${this.openRouterApiKey}`,
+      'Content-Type': 'application/json'
+    };
+    if (this.openRouterHttpReferer) headers['HTTP-Referer'] = this.openRouterHttpReferer;
+    if (this.openRouterAppTitle) headers['X-OpenRouter-Title'] = this.openRouterAppTitle;
+
+    const payload = {
+      model: selectedModel,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+      temperature: 0.3,
+      top_p: 0.85,
+      max_tokens: 400,
+      stop: ['\nPatient:', '\nAssistant:']
+    };
+
+    console.log(`[STREAMING] Initiating OpenRouter stream for model: ${selectedModel}`);
+    const response = await axios.post(
+      `${this.openRouterUrl.replace(/\/+$/, '')}/chat/completions`,
+      payload,
+      { headers, timeout: timeoutMs, responseType: 'stream' }
+    );
+
+    return new Promise((resolve, reject) => {
+      let buffer = '';
+      let sentenceBuffer = '';
+      let fullOutput = '';
+      const callbackPromises = [];
+      
+      const sentenceEndRegex = /(?<!\b(Dr|Mr|Mrs|Ms|St|vs|am|pm|jr|sr|approx|appt|appts|inc|corp|co|ie|eg|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s*[.?!]/i;
+      const clauseEndRegex = /[,;]/;
+
+      response.data.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // Hold onto the last incomplete line
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const dataStr = trimmed.slice(6).trim();
+          if (dataStr === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(dataStr);
+            const token = parsed.choices?.[0]?.delta?.content || '';
+            if (!token) continue;
+
+            fullOutput += token;
+
+            // Only stream out if we haven't reached the METADATA block
+            if (!fullOutput.includes('|| METADATA:')) {
+              sentenceBuffer += token;
+
+              // Filter out starting 'REPLY:' label continuously handling any leading spaces
+              sentenceBuffer = sentenceBuffer.replace(/^\s*reply:\s*/i, '');
+
+              // Check if a sentence is complete
+              const match = sentenceBuffer.match(sentenceEndRegex);
+              if (match) {
+                const index = match.index;
+                let sentence = sentenceBuffer.slice(0, index + 1).trim();
+                sentenceBuffer = sentenceBuffer.slice(index + 1);
+                
+                // Clean up metadata separator and REPLY prefix
+                if (sentence.includes('||')) {
+                  sentence = sentence.split('||')[0].trim();
+                }
+                sentence = sentence.replace(/^\s*reply:\s*/i, '').trim();
+
+                if (sentence && sentence.length > 1) {
+                  const p = onSentenceCallback(sentence);
+                  if (p && typeof p.then === 'function') {
+                    callbackPromises.push(p);
+                  }
+                }
+              } else {
+                // Split on clause endpoints if the clause has at least 5 words
+                const clauseMatch = sentenceBuffer.match(clauseEndRegex);
+                if (clauseMatch) {
+                  const words = sentenceBuffer.slice(0, clauseMatch.index).trim().split(/\s+/).filter(Boolean);
+                  if (words.length >= 5) {
+                    const index = clauseMatch.index;
+                    let clause = sentenceBuffer.slice(0, index + 1).trim();
+                    sentenceBuffer = sentenceBuffer.slice(index + 1);
+                    
+                    if (clause.includes('||')) {
+                      clause = clause.split('||')[0].trim();
+                    }
+                    clause = clause.replace(/^\s*reply:\s*/i, '').trim();
+
+                    if (clause && clause.length > 1) {
+                      const p = onSentenceCallback(clause);
+                      if (p && typeof p.then === 'function') {
+                        callbackPromises.push(p);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } catch (_) {
+            // Ignore incomplete stream JSON lines
+          }
+        }
+      });
+
+      response.data.on('end', () => {
+        console.log(`[STREAMING] OpenRouter stream completed.`);
+        
+        // Process any remaining text in the sentence buffer
+        let finalSentence = sentenceBuffer.trim();
+        if (finalSentence.includes('||')) {
+          finalSentence = finalSentence.split('||')[0].trim();
+        }
+        finalSentence = finalSentence.replace(/^\s*reply:\s*/i, '').trim();
+        if (finalSentence && finalSentence.length > 1) {
+          const p = onSentenceCallback(finalSentence);
+          if (p && typeof p.then === 'function') {
+            callbackPromises.push(p);
+          }
+        }
+
+        // Parse Metadata JSON block
+        const parts = fullOutput.split('|| METADATA:');
+        let rawReply = parts[0] ? parts[0].replace(/^\s*reply:\s*/i, '').trim() : '';
+        let metadata = {};
+
+        if (parts[1]) {
+          try {
+            metadata = JSON.parse(parts[1].trim());
+          } catch (err) {
+            console.warn('[STREAMING] Metadata JSON parsing failed:', err.message);
+          }
+        }
+
+        // Wait for all sentence processing promises to resolve before completing the turn
+        Promise.all(callbackPromises).then(() => {
+          // Validate and merge into the default turn structure
+          try {
+            const validated = validateRealtimeTurn(metadata);
+            validated.reply = rawReply || validated.reply;
+            resolve(validated);
+          } catch (validationErr) {
+            console.warn('[STREAMING] Metadata validation failed, using fallback turn:', validationErr.message);
+            resolve({
+              reply: rawReply || 'I understand. Please go on.',
+              action: 'continue',
+              goal_status: 'pending',
+              risk_detected: false,
+              confidence: 0.8
+            });
+          }
+        }).catch((err) => {
+          console.error('[STREAMING] Sentence processing error:', err.message);
+          resolve({
+            reply: rawReply || 'I understand. Please go on.',
+            action: 'continue',
+            goal_status: 'pending',
+            risk_detected: false,
+            confidence: 0.8
+          });
+        });
+      });
+
+      response.data.on('error', (err) => {
+        reject(err);
+      });
+    });
   }
 
   // ── Sentiment Classification ───────────────────────────────────────────

@@ -1,32 +1,42 @@
 # Local AI Models
 
-All model files are stored in the repository under `models/` and mounted into Docker containers.
-No model binaries are downloaded during Docker image build.
+This directory holds the model assets used for local offline inference. Only `README.md` files are tracked in git; the actual model binaries are ignored.
 
-## Git Tracking Policy
+> [!NOTE]
+> **Zero Manual Setup Required:** You do not need to download these files manually. The system will automatically detect if they are missing and download them on the first startup.
 
-Only `README.md` files are tracked under `models/`.
-Model assets are git-ignored and must be provided locally by each user:
-- Whisper: `*.bin`
-- VAD: `*.onnx`
+## Automated Download & Management
+
+1. **Whisper STT Model (`ggml-small.en-q5_1.bin`):**
+   - Automatically downloaded by the `./start.sh` startup script or inside the `healthcare_whisper` container on startup.
+   - Saves to the host path `models/whisper/ggml-small.en-q5_1.bin` (which is bind-mounted to `/models/whisper/` inside the Whisper container).
+2. **Silero VAD ONNX Model:**
+   - The WebRTC LiveKit agent uses the `livekit-plugins-silero` library, which automatically downloads and caches the required voice activity detection model inside the container at runtime. No manual download is necessary.
+
+---
 
 ## Directory Structure
 
 ```text
 models/
-|-- whisper/   # Whisper STT models (GGML)
-|-- vad/       # Silero VAD model (ONNX)
+|-- whisper/   # Whisper STT GGML models (mounted at /models/whisper/)
+|   |-- ggml-small.en-q5_1.bin (quantized, ~181MB)
+|   `-- README.md
 `-- README.md
 ```
 
-## How to Swap Models
+## Manual Download (Optional)
 
-### Whisper (Speech-to-Text)
-1. Place the `.bin` file in `models/whisper/`.
-2. Update `WHISPER_MODEL_PATH` in `.env`.
-3. Restart whisper: `docker compose restart whisper`.
+If you prefer to download files manually, run:
 
-### Silero VAD
-1. Place the `.onnx` file in `models/vad/`.
-2. Update `VAD_MODEL_PATH` in `.env`.
-3. Restart backend/worker after VAD integration changes: `docker compose restart backend worker`.
+```bash
+# Download Whisper GGML model
+mkdir -p models/whisper
+wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin -O models/whisper/ggml-small.en-q5_1.bin
+```
+
+## How to Swap Whisper Models
+
+1. Place the new GGML `.bin` file in `models/whisper/`.
+2. Update the `WHISPER_MODEL_PATH` variable in your `.env` file (e.g., `WHISPER_MODEL_PATH=/models/whisper/ggml-medium.en.bin`).
+3. Restart the Whisper service: `docker compose restart whisper`.

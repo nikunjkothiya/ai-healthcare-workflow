@@ -146,6 +146,7 @@ async function flushPendingUserTranscript(sessionId, force = false) {
 
   try {
     session.turnCount += 1;
+    const currentTurn = session.turnCount;
     if (session.turnCount > MAX_CONVERSATION_TURNS) {
       session.finalState = STATES.COMPLETED;
       safeSend(session.ws, { type: 'ai_response', transcript: 'Thank you for your time today. We will end this call now.', shouldEnd: true });
@@ -177,32 +178,128 @@ async function flushPendingUserTranscript(sessionId, force = false) {
     }
 
     let realtimeTurn = null;
+    let chunkIndex = 0;
     const emergency = detectEmergencyRisk(transcript);
     if (emergency.detected) {
       realtimeTurn = {
         reply: emergency.guidance || EMERGENCY_GUIDANCE,
-        action: 'transfer_human', goal_status: 'failed',
-        risk_detected: true, confidence: 1,
-        emergency_category: emergency.category, emergency_severity: emergency.severity
+        action: 'transfer_human',
+        goal_status: 'failed',
+        risk_detected: true,
+        confidence: 1,
+        emergency_category: emergency.category,
+        emergency_severity: emergency.severity
       };
+
+      console.log(`[GUARD] Emergency risk detected. Transferring to human. Reply: "${realtimeTurn.reply}"`);
+
+      const ttsPath = path.join(AUDIO_TMP_DIR, `output_${sessionId}_chunk_${chunkIndex}_${Date.now()}.wav`);
+      const audioFile = await tryGenerateTTS(realtimeTurn.reply, ttsPath);
+
+      if (audioFile) {
+        const aiAudioData = fs.readFileSync(ttsPath);
+        const audioBase64 = aiAudioData.toString('base64');
+        const chunkDurationMs = estimateWavDurationMs(aiAudioData) || 1500;
+
+        safeSend(session.ws, {
+          type: 'ai_audio_chunk',
+          data: audioBase64,
+          transcript: realtimeTurn.reply,
+          chunkIndex: chunkIndex++,
+          isFinal: false
+        });
+        session.assistantSpeakingUntil = Date.now() + chunkDurationMs + ASSISTANT_SPEECH_GUARD_MS;
+      } else {
+        safeSend(session.ws, {
+          type: 'ai_audio_chunk',
+          transcript: realtimeTurn.reply,
+          chunkIndex: chunkIndex++,
+          isFinal: false
+        });
+        session.assistantSpeakingUntil = Date.now() + 3000;
+      }
+      cleanupFile(ttsPath);
     } else {
       await ensureRealtimeLeaseReady(session);
       const memory = buildSlidingWindowMemory(session.conversation, session.conversationSummary);
       session.conversationSummary = memory.summary;
 
       const llmStartedAt = Date.now();
+      let chunkIndex = 0;
+      let ttsPromiseChain = Promise.resolve();
+
       try {
-        realtimeTurn = await llmService.generateRealtimeTurn({
-          campaignObjective: buildCampaignObjective(session),
-          campaignType: session.patientContext?.campaign_type || 'appointment_confirmation',
-          patient: session.patientContext || null,
-          conversationSummary: memory.summary,
-          recentTurns: memory.lastTurns,
-          latestPatientMessage: transcript,
-          emotionalState: memory.emotionalState,
-          confirmedFacts: memory.confirmedFacts,
-          goalProgress: memory.goalProgress
-        });
+        realtimeTurn = await llmService.generateRealtimeTurnStream(
+          {
+            campaignObjective: buildCampaignObjective(session),
+            campaignType: session.patientContext?.campaign_type || 'appointment_confirmation',
+            patient: session.patientContext || null,
+            conversationSummary: memory.summary,
+            recentTurns: memory.lastTurns,
+            latestPatientMessage: transcript,
+            emotionalState: memory.emotionalState,
+            confirmedFacts: memory.confirmedFacts,
+            goalProgress: memory.goalProgress
+          },
+          (sentence) => {
+            ttsPromiseChain = ttsPromiseChain.then(async () => {
+              if (session.ended || session.turnCount !== currentTurn) return;
+
+              console.log(`[STREAMING] Sentence chunk derived and processing: "${sentence}"`);
+
+              const ttsPath = path.join(AUDIO_TMP_DIR, `output_${sessionId}_chunk_${chunkIndex}_${Date.now()}.wav`);
+              try {
+                const audioFile = await tryGenerateTTS(sentence, ttsPath);
+
+                if (session.ended || session.turnCount !== currentTurn) {
+                  cleanupFile(ttsPath);
+                  return;
+                }
+
+                if (audioFile) {
+                  const aiAudioData = fs.readFileSync(ttsPath);
+                  const audioBase64 = aiAudioData.toString('base64');
+                  const chunkDurationMs = estimateWavDurationMs(aiAudioData) || 1500;
+
+                  safeSend(session.ws, {
+                    type: 'ai_audio_chunk',
+                    data: audioBase64,
+                    transcript: sentence,
+                    chunkIndex: chunkIndex++,
+                    isFinal: false
+                  });
+
+                  const now = Date.now();
+                  if (session.assistantSpeakingUntil > now) {
+                    session.assistantSpeakingUntil += chunkDurationMs;
+                  } else {
+                    session.assistantSpeakingUntil = now + chunkDurationMs + ASSISTANT_SPEECH_GUARD_MS;
+                  }
+                } else {
+                  safeSend(session.ws, {
+                    type: 'ai_audio_chunk',
+                    transcript: sentence,
+                    chunkIndex: chunkIndex++,
+                    isFinal: false
+                  });
+                  session.assistantSpeakingUntil = Date.now() + 2000;
+                }
+              } catch (ttsErr) {
+                console.error(`[STREAMING] tryGenerateTTS failed for "${sentence}":`, ttsErr.message);
+                safeSend(session.ws, {
+                  type: 'ai_audio_chunk',
+                  transcript: sentence,
+                  chunkIndex: chunkIndex++,
+                  isFinal: false
+                });
+                session.assistantSpeakingUntil = Date.now() + 2000;
+              } finally {
+                cleanupFile(ttsPath);
+              }
+            });
+            return ttsPromiseChain;
+          }
+        );
       } catch (llmError) {
         console.error(`[LLM-FAIL] Turn ${session.turnCount}: ${llmError.message}`);
         session.consecutiveFailures = (session.consecutiveFailures || 0) + 1;
@@ -228,24 +325,36 @@ async function flushPendingUserTranscript(sessionId, force = false) {
             _fallback: true
           };
         }
+
+        safeSend(session.ws, {
+          type: 'ai_audio_chunk',
+          transcript: realtimeTurn.reply,
+          chunkIndex: chunkIndex++,
+          isFinal: false
+        });
+        session.assistantSpeakingUntil = Date.now() + 3000;
       }
       console.log(`[LATENCY][LLM] ${Date.now() - llmStartedAt}ms`);
     }
 
-    // Reset consecutive failures on success
+    if (session.ended || session.turnCount !== currentTurn) {
+      console.log(`[INTERRUPT] Ignoring obsolete LLM response for turn ${currentTurn}`);
+      return;
+    }
+
     if (realtimeTurn && !realtimeTurn._fallback) {
       session.consecutiveFailures = 0;
     }
 
     const action = String(realtimeTurn.action || 'continue').toLowerCase();
     const farewellPattern = /\b(goodbye|good\s?bye|bye\s?bye|bye|gotta go|hang up|talk later|have to go|i('m|\s+am) done|that('s|\s+is) all)\b/i;
-    if (action === 'continue' && farewellPattern.test(transcript)) {
-      realtimeTurn.action = 'end_call';
+    let finalAction = String(realtimeTurn.action || 'continue').toLowerCase();
+    if (finalAction === 'continue' && farewellPattern.test(transcript)) {
+      finalAction = 'end_call';
       realtimeTurn.reply = 'Thank you for your time. Have a great day!';
       realtimeTurn.goal_status = session.goalStatus || 'pending';
     }
 
-    const finalAction = String(realtimeTurn.action || 'continue').toLowerCase();
     const shouldEnd = finalAction !== 'continue';
     const aiResponse = sanitizeAssistantText(realtimeTurn.reply);
     session.goalStatus = realtimeTurn.goal_status || session.goalStatus || 'pending';
@@ -270,41 +379,27 @@ async function flushPendingUserTranscript(sessionId, force = false) {
 
     if (global.eventBus) {
       await global.eventBus.emit(EVENTS.CALL_RESPONSE_GENERATED, {
-        callId: session.callId, sessionId, action, response: aiResponse,
+        callId: session.callId, sessionId, action: finalAction, response: aiResponse,
         goalStatus: realtimeTurn.goal_status, riskDetected: Boolean(realtimeTurn.risk_detected), confidence: realtimeTurn.confidence
       });
     }
 
-    const ttsStartedAt = Date.now();
-    const ttsPath = path.join(AUDIO_TMP_DIR, `output_${sessionId}_${Date.now()}.wav`);
-    const audioFile = await tryGenerateTTS(aiResponse, ttsPath);
-    let playbackDurationMs = 1800;
-
-    if (audioFile) {
-      const aiAudioData = fs.readFileSync(ttsPath);
-      playbackDurationMs = estimateWavDurationMs(aiAudioData) || playbackDurationMs;
-      safeSend(session.ws, {
-        type: 'ai_audio', data: aiAudioData.toString('base64'),
-        transcript: aiResponse, shouldEnd, action,
-        riskDetected: Boolean(realtimeTurn.risk_detected), confidence: realtimeTurn.confidence
-      });
-    } else {
-      safeSend(session.ws, {
-        type: 'ai_response', transcript: aiResponse, shouldEnd, action,
-        riskDetected: Boolean(realtimeTurn.risk_detected), confidence: realtimeTurn.confidence
-      });
-    }
-
-    console.log(`[LATENCY][TTS] ${Date.now() - ttsStartedAt}ms`);
-    cleanupFile(ttsPath);
-    session.assistantSpeakingUntil = Date.now() + playbackDurationMs + ASSISTANT_SPEECH_GUARD_MS;
+    safeSend(session.ws, {
+      type: 'ai_audio_chunk',
+      isFinal: true,
+      action: finalAction,
+      shouldEnd,
+      transcript: aiResponse,
+      riskDetected: Boolean(realtimeTurn.risk_detected),
+      confidence: realtimeTurn.confidence
+    });
 
     if (!shouldEnd && session.callId) {
       await stateMachine.transition(session.callId, STATES.IN_PROGRESS, { turnCount: session.turnCount, goalStatus: session.goalStatus });
     }
 
     if (shouldEnd) {
-      const waitMs = Math.max(1200, playbackDurationMs + 120);
+      const waitMs = Math.max(1500, (session.assistantSpeakingUntil - Date.now()) + 200);
       setTimeout(() => {
         handleEndCall(sessionId, session.patientId).catch(err => console.error('Failed to auto-end call:', err.message));
       }, waitMs);
@@ -412,8 +507,38 @@ async function handleEndCall(sessionId, patientId) {
   }
 }
 
+async function handleInterruption(sessionId) {
+  const session = getSession(sessionId);
+  if (!session || session.ended) return;
+
+  console.log(`[INTERRUPT] Server received interruption for session ${sessionId}. Stopping assistant speech.`);
+
+  // 1. Reset assistant speaking timer
+  session.assistantSpeakingUntil = 0;
+
+  // 2. Set LLM busy flag to false to accept new turns
+  session.llmBusy = false;
+
+  // 3. Clear any pending user transcripts and silence timers
+  session.pendingUserTranscript = '';
+  clearSilenceTimer(session);
+
+  // 4. Update state machine back to IN_PROGRESS if it was AWAITING_RESPONSE
+  if (session.callId) {
+    try {
+      const callResult = await query('SELECT state FROM calls WHERE id = $1', [session.callId]);
+      const currentState = callResult.rows[0]?.state;
+      if (currentState === STATES.AWAITING_RESPONSE) {
+        await stateMachine.transition(session.callId, STATES.IN_PROGRESS, { turnCount: session.turnCount });
+      }
+    } catch (err) {
+      console.warn('Failed to transition state machine on interruption:', err.message);
+    }
+  }
+}
+
 module.exports = {
   flushPendingUserTranscript, handleEndCall, tryGenerateTTS,
   ensureRealtimeLeaseReady, releaseRealtimeLease, estimateWavDurationMs,
-  buildCampaignObjective
+  buildCampaignObjective, handleInterruption
 };

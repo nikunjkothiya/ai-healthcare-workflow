@@ -22,7 +22,7 @@ const {
 
 const {
   flushPendingUserTranscript, handleEndCall, tryGenerateTTS,
-  ensureRealtimeLeaseReady, estimateWavDurationMs
+  ensureRealtimeLeaseReady, estimateWavDurationMs, handleInterruption
 } = require('./websocket/turnProcessor');
 
 const agentController = new AgentController();
@@ -134,6 +134,8 @@ function initWebSocket(server) {
           await handleRingRejection(normalizePatientId(data.patientId));
         } else if (data.type === 'audio_chunk') {
           await handleAudioChunk(sessionId, data.data, flushPendingUserTranscript);
+        } else if (data.type === 'interruption') {
+          await handleInterruption(sessionId);
         } else if (data.type === 'end_call') {
           await handleEndCall(sessionId, data.patientId);
         } else {

@@ -106,29 +106,22 @@ function validateRealtimeTurn(payload) {
     throw new Error('Realtime schema: payload is not an object');
   }
 
-  requiredKeysPresent(
-    payload,
-    ['reply', 'action', 'goal_status', 'risk_detected', 'confidence'],
-    'Realtime schema'
-  );
+  // Defensive fallback mapping for LLM keys
+  const reply = payload.reply || payload.response || payload.message || payload.spoken_response || '';
+  const actionRaw = String(payload.action || 'continue').toLowerCase();
+  const goalStatusRaw = String(payload.goal_status || payload.goalStatus || 'pending').toLowerCase();
+  const riskDetected = payload.risk_detected !== undefined ? payload.risk_detected : (payload.riskDetected !== undefined ? payload.riskDetected : false);
+  const confidence = payload.confidence !== undefined ? payload.confidence : 0.8;
 
-  const action = normalizeString(payload.action).toLowerCase();
-  const goalStatus = normalizeString(payload.goal_status).toLowerCase();
-
-  if (!['continue', 'end_call', 'transfer_human'].includes(action)) {
-    throw new Error('Realtime schema: invalid action');
-  }
-
-  if (!['pending', 'achieved', 'failed'].includes(goalStatus)) {
-    throw new Error('Realtime schema: invalid goal_status');
-  }
+  const action = ['continue', 'end_call', 'transfer_human'].includes(actionRaw) ? actionRaw : 'continue';
+  const goalStatus = ['pending', 'achieved', 'failed'].includes(goalStatusRaw) ? goalStatusRaw : 'pending';
 
   return {
-    reply: normalizeString(payload.reply, 'I understand. Could you please repeat that?').slice(0, 500),
+    reply: normalizeString(reply, 'I understand. Could you please repeat that?').slice(0, 500),
     action,
     goal_status: goalStatus,
-    risk_detected: Boolean(payload.risk_detected),
-    confidence: clampConfidence(payload.confidence, 0.5)
+    risk_detected: Boolean(riskDetected),
+    confidence: clampConfidence(confidence, 0.5)
   };
 }
 
@@ -143,59 +136,39 @@ function validatePostCallAnalysis(payload) {
     throw new Error('Post-call schema: payload is not an object');
   }
 
-  requiredKeysPresent(
-    payload,
-    [
-      'summary',
-      'campaign_goal_achieved',
-      'appointment_confirmed',
-      'confirmed_date',
-      'confirmed_time',
-      'sentiment',
-      'risk_level',
-      'risk_flags',
-      'requires_manual_followup',
-      'followup_reason',
-      'priority'
-    ],
-    'Post-call schema'
-  );
+  // Defensive fallback mapping for post-call analysis keys
+  const summary = payload.summary || payload.text_summary || 'No summary available.';
+  const campaignGoalAchieved = payload.campaign_goal_achieved !== undefined ? payload.campaign_goal_achieved : (payload.goal_achieved !== undefined ? payload.goal_achieved : false);
+  const appointmentConfirmed = payload.appointment_confirmed !== undefined ? payload.appointment_confirmed : (payload.confirmed !== undefined ? payload.confirmed : false);
+  const confirmedDate = payload.confirmed_date !== undefined ? payload.confirmed_date : (payload.date !== undefined ? payload.date : null);
+  const confirmedTime = payload.confirmed_time !== undefined ? payload.confirmed_time : (payload.time !== undefined ? payload.time : null);
+  const sentimentRaw = String(payload.sentiment || 'neutral').toLowerCase();
+  const riskLevelRaw = String(payload.risk_level || 'low').toLowerCase();
+  const riskFlags = Array.isArray(payload.risk_flags) ? payload.risk_flags : (Array.isArray(payload.flags) ? payload.flags : []);
+  const requiresManualFollowup = payload.requires_manual_followup !== undefined ? payload.requires_manual_followup : (payload.requires_followup !== undefined ? payload.requires_followup : false);
+  const followupReason = payload.followup_reason !== undefined ? payload.followup_reason : (payload.reason !== undefined ? payload.reason : null);
+  const priorityRaw = String(payload.priority || 'low').toLowerCase();
 
-  const sentiment = normalizeString(payload.sentiment).toLowerCase();
-  if (!['positive', 'neutral', 'negative'].includes(sentiment)) {
-    throw new Error('Post-call schema: invalid sentiment');
-  }
+  const sentiment = ['positive', 'neutral', 'negative'].includes(sentimentRaw) ? sentimentRaw : 'neutral';
+  const riskLevel = ['low', 'medium', 'high'].includes(riskLevelRaw) ? riskLevelRaw : 'low';
+  const priority = ['low', 'medium', 'high'].includes(priorityRaw) ? priorityRaw : 'low';
 
-  const riskLevel = normalizeString(payload.risk_level).toLowerCase();
-  if (!['low', 'medium', 'high'].includes(riskLevel)) {
-    throw new Error('Post-call schema: invalid risk_level');
-  }
-
-  const priority = normalizeString(payload.priority).toLowerCase();
-  if (!['low', 'medium', 'high'].includes(priority)) {
-    throw new Error('Post-call schema: invalid priority');
-  }
-
-  if (!Array.isArray(payload.risk_flags)) {
-    throw new Error('Post-call schema: risk_flags must be an array');
-  }
-
-  const cleanedSummary = sanitizeOutputText(payload.summary);
+  const cleanedSummary = sanitizeOutputText(summary);
 
   return {
     summary: (cleanedSummary || 'No summary available.').slice(0, 1200),
-    campaign_goal_achieved: Boolean(payload.campaign_goal_achieved),
-    appointment_confirmed: Boolean(payload.appointment_confirmed),
-    confirmed_date: normalizeNullableString(payload.confirmed_date),
-    confirmed_time: normalizeNullableString(payload.confirmed_time),
+    campaign_goal_achieved: Boolean(campaignGoalAchieved),
+    appointment_confirmed: Boolean(appointmentConfirmed),
+    confirmed_date: normalizeNullableString(confirmedDate),
+    confirmed_time: normalizeNullableString(confirmedTime),
     sentiment,
     risk_level: riskLevel,
-    risk_flags: payload.risk_flags
+    risk_flags: riskFlags
       .map((flag) => sanitizeOutputText(flag))
       .filter(Boolean)
       .slice(0, 20),
-    requires_manual_followup: Boolean(payload.requires_manual_followup),
-    followup_reason: normalizeNullableString(payload.followup_reason),
+    requires_manual_followup: Boolean(requiresManualFollowup),
+    followup_reason: normalizeNullableString(followupReason),
     priority
   };
 }

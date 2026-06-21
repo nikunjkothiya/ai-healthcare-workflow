@@ -57,7 +57,15 @@ services:
     networks:
       - healthcare_network
     command: >
-      /whisper.cpp/build/bin/whisper-server --host 0.0.0.0 --port 9000 --inference-path /inference -m ${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en-q5_1.bin} --language en --no-timestamps -t 4
+      sh -c "
+      MODEL_FILE=\"$${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en-q5_1.bin}\";
+      if [ \"$$MODEL_FILE\" = \"/models/whisper/ggml-small.en-q5_1.bin\" ] && [ ! -f \"$$MODEL_FILE\" ]; then
+        echo 'Default Whisper model not found. Downloading ggml-small.en-q5_1.bin...';
+        mkdir -p /models/whisper;
+        wget -q --show-progress -O /models/whisper/ggml-small.en-q5_1.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin;
+      fi;
+      exec /whisper.cpp/build/bin/whisper-server --host 0.0.0.0 --port 9000 --inference-path /inference -m \"$$MODEL_FILE\" --language en --no-timestamps -t 4
+      "
 
   kokoro:
     image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.2
@@ -114,41 +122,29 @@ services:
       - OPENROUTER_URL=${OPENROUTER_URL:-https://openrouter.ai/api/v1}
       - OPENROUTER_HTTP_REFERER=${OPENROUTER_HTTP_REFERER:-http://localhost:3000}
       - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-Care Outreach Assistant}
-      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/free}
-      - OPENROUTER_MODEL_CHAT=${OPENROUTER_MODEL_CHAT:-}
-      - OPENROUTER_MODEL_REALTIME=${OPENROUTER_MODEL_REALTIME:-}
-      - OPENROUTER_MODEL_DECISION=${OPENROUTER_MODEL_DECISION:-}
-      - OPENROUTER_MODEL_ANALYSIS=${OPENROUTER_MODEL_ANALYSIS:-}
-      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-15000}
-      - LLM_MAX_RETRIES=${LLM_MAX_RETRIES:-1}
-      - LLM_RETRY_DELAY_MS=${LLM_RETRY_DELAY_MS:-800}
-      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-8000}
-      - LLM_REALTIME_MAX_RETRIES=${LLM_REALTIME_MAX_RETRIES:-0}
-      - LLM_FAILURE_HANDOFF=${LLM_FAILURE_HANDOFF:-true}
-      - CALL_SPACING_MS=${CALL_SPACING_MS:-15000}
-      - RING_TIMEOUT_MS=${RING_TIMEOUT_MS:-30000}
-      - AUDIO_TMP_DIR=${AUDIO_TMP_DIR:-/tmp/healthcare_audio}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-google/gemma-4-31b-it:free}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-30000}
+      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-30000}
+      - LLM_NUM_CTX=${LLM_NUM_CTX:-1024}
+      - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS:-768}
+      - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS:-4096}
+      - LLM_ANALYSIS_TIMEOUT_MS=${LLM_ANALYSIS_TIMEOUT_MS:-120000}
+      - ANALYSIS_MODEL_WAIT_TIMEOUT_MS=${ANALYSIS_MODEL_WAIT_TIMEOUT_MS:-180000}
+      - LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS=${LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS:-18000}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-devsecret}
       - WHISPER_HOST=${WHISPER_HOST:-whisper}
       - WHISPER_PORT=${WHISPER_PORT:-9000}
       - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en-q5_1.bin}
-      - VAD_MODEL_PATH=${VAD_MODEL_PATH:-/models/vad/silero_vad_op18_ifless.onnx}
       - KOKORO_HOST=${KOKORO_HOST:-kokoro}
       - KOKORO_PORT=${KOKORO_PORT:-8880}
       - KOKORO_VOICE=${KOKORO_VOICE:-af_bella}
       - KOKORO_LANG=${KOKORO_LANG:-en-us}
-      - REQUIRE_SERVER_TTS=${REQUIRE_SERVER_TTS:-true}
-      - STT_CHUNK_MS=${STT_CHUNK_MS:-1200}
-      - STT_CHUNK_OVERLAP_MS=${STT_CHUNK_OVERLAP_MS:-200}
-      - STT_REALTIME_CHUNK_MS=${STT_REALTIME_CHUNK_MS:-1000}
-      - STT_REALTIME_SPLIT=${STT_REALTIME_SPLIT:-false}
-      - STT_REALTIME_SPLIT_THRESHOLD_MS=${STT_REALTIME_SPLIT_THRESHOLD_MS:-15000}
-      - STT_SILENCE_MS=${STT_SILENCE_MS:-500}
-      - STT_VAD_SILENCE_RMS=${STT_VAD_SILENCE_RMS:-0.005}
-      - STT_MAX_CONCURRENT=${STT_MAX_CONCURRENT:-3}
-      - ASSISTANT_SPEECH_GUARD_MS=${ASSISTANT_SPEECH_GUARD_MS:-350}
+      - RING_TIMEOUT_MS=${RING_TIMEOUT_MS:-30000}
+      - WEBSOCKET_CALL_MAX_WAIT_MS=${WEBSOCKET_CALL_MAX_WAIT_MS:-720000}
+      - POST_CALL_ANALYSIS_MAX_WAIT_MS=${POST_CALL_ANALYSIS_MAX_WAIT_MS:-90000}
       - MAX_CALL_DURATION_MS=${MAX_CALL_DURATION_MS:-600000}
       - MAX_CONVERSATION_TURNS=${MAX_CONVERSATION_TURNS:-30}
-      - MAX_RUNTIME_RAM_GB=${MAX_RUNTIME_RAM_GB:-14}
     depends_on:
       postgres:
         condition: service_healthy
@@ -158,8 +154,6 @@ services:
         condition: service_healthy
       whisper:
         condition: service_healthy
-    volumes:
-      - ./models/vad:/models/vad:ro
     deploy:
       resources:
         limits:
@@ -189,38 +183,21 @@ services:
       - OPENROUTER_URL=${OPENROUTER_URL:-https://openrouter.ai/api/v1}
       - OPENROUTER_HTTP_REFERER=${OPENROUTER_HTTP_REFERER:-http://localhost:3000}
       - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-Care Outreach Assistant}
-      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/free}
-      - OPENROUTER_MODEL_CHAT=${OPENROUTER_MODEL_CHAT:-}
-      - OPENROUTER_MODEL_REALTIME=${OPENROUTER_MODEL_REALTIME:-}
-      - OPENROUTER_MODEL_DECISION=${OPENROUTER_MODEL_DECISION:-}
-      - OPENROUTER_MODEL_ANALYSIS=${OPENROUTER_MODEL_ANALYSIS:-}
-      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-15000}
-      - LLM_MAX_RETRIES=${LLM_MAX_RETRIES:-1}
-      - LLM_RETRY_DELAY_MS=${LLM_RETRY_DELAY_MS:-800}
-      - LLM_REALTIME_TIMEOUT_MS=${LLM_REALTIME_TIMEOUT_MS:-8000}
-      - LLM_REALTIME_MAX_RETRIES=${LLM_REALTIME_MAX_RETRIES:-0}
-      - LLM_FAILURE_HANDOFF=${LLM_FAILURE_HANDOFF:-true}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-google/gemma-4-31b-it:free}
+      - LLM_TIMEOUT_MS=${LLM_TIMEOUT_MS:-30000}
+      - LLM_NUM_CTX=${LLM_NUM_CTX:-1024}
+      - LLM_MAX_TOKENS_ANALYSIS=${LLM_MAX_TOKENS_ANALYSIS:-768}
+      - LLM_NUM_CTX_ANALYSIS=${LLM_NUM_CTX_ANALYSIS:-4096}
+      - LLM_ANALYSIS_TIMEOUT_MS=${LLM_ANALYSIS_TIMEOUT_MS:-120000}
+      - ANALYSIS_MODEL_WAIT_TIMEOUT_MS=${ANALYSIS_MODEL_WAIT_TIMEOUT_MS:-180000}
+      - LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS=${LLM_ANALYSIS_TRANSCRIPT_MAX_CHARS:-18000}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-1}
       - CALL_SPACING_MS=${CALL_SPACING_MS:-15000}
+      - RING_TIMEOUT_MS=${RING_TIMEOUT_MS:-30000}
       - WEBSOCKET_CALL_MAX_WAIT_MS=${WEBSOCKET_CALL_MAX_WAIT_MS:-720000}
       - POST_CALL_ANALYSIS_MAX_WAIT_MS=${POST_CALL_ANALYSIS_MAX_WAIT_MS:-90000}
-      - WHISPER_HOST=${WHISPER_HOST:-whisper}
-      - WHISPER_PORT=${WHISPER_PORT:-9000}
-      - WHISPER_MODEL_PATH=${WHISPER_MODEL_PATH:-/models/whisper/ggml-small.en-q5_1.bin}
-      - VAD_MODEL_PATH=${VAD_MODEL_PATH:-/models/vad/silero_vad_op18_ifless.onnx}
-      - KOKORO_HOST=${KOKORO_HOST:-kokoro}
-      - KOKORO_PORT=${KOKORO_PORT:-8880}
-      - KOKORO_VOICE=${KOKORO_VOICE:-af_bella}
-      - KOKORO_LANG=${KOKORO_LANG:-en-us}
-      - REQUIRE_SERVER_TTS=${REQUIRE_SERVER_TTS:-true}
-      - STT_CHUNK_MS=${STT_CHUNK_MS:-1200}
-      - STT_CHUNK_OVERLAP_MS=${STT_CHUNK_OVERLAP_MS:-200}
-      - STT_REALTIME_SPLIT=${STT_REALTIME_SPLIT:-false}
-      - STT_REALTIME_SPLIT_THRESHOLD_MS=${STT_REALTIME_SPLIT_THRESHOLD_MS:-15000}
-      - STT_SILENCE_MS=${STT_SILENCE_MS:-500}
-      - STT_VAD_SILENCE_RMS=${STT_VAD_SILENCE_RMS:-0.005}
-      - STT_MAX_CONCURRENT=${STT_MAX_CONCURRENT:-3}
-      - MAX_RUNTIME_RAM_GB=${MAX_RUNTIME_RAM_GB:-14}
+      - MAX_CALL_DURATION_MS=${MAX_CALL_DURATION_MS:-600000}
+      - MAX_CONVERSATION_TURNS=${MAX_CONVERSATION_TURNS:-30}
     depends_on:
       postgres:
         condition: service_healthy
@@ -230,7 +207,6 @@ services:
         condition: service_healthy
     volumes:
       - ./ai/sample_audio:/sample_audio
-      - ./models/vad:/models/vad:ro
     deploy:
       resources:
         limits:
@@ -249,20 +225,57 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - VITE_API_URL=http://localhost:4000
-      - VITE_WS_URL=ws://localhost:4000
-      - VITE_REQUIRE_SERVER_TTS=${VITE_REQUIRE_SERVER_TTS:-true}
-      - VITE_VAD_SPEECH_THRESHOLD=${VITE_VAD_SPEECH_THRESHOLD:-0.007}
-      - VITE_VAD_SILENCE_THRESHOLD=${VITE_VAD_SILENCE_THRESHOLD:-0.0035}
-      - VITE_VAD_MIN_SPEECH_MS=${VITE_VAD_MIN_SPEECH_MS:-300}
-      - VITE_VAD_END_SILENCE_MS=${VITE_VAD_END_SILENCE_MS:-650}
-      - VITE_VAD_MAX_UTTERANCE_MS=${VITE_VAD_MAX_UTTERANCE_MS:-8000}
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:4000}
+      - VITE_WS_URL=${VITE_WS_URL:-ws://localhost:4000}
     depends_on:
       - backend
     deploy:
       resources:
         limits:
           memory: 128M
+    networks:
+      - healthcare_network
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: healthcare_livekit
+    command: --config /livekit.yaml
+    ports:
+      - "7800:7800"
+      - "50000-50050:50000-50050/udp"
+    volumes:
+      - ./livekit.yaml:/livekit.yaml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - healthcare_network
+
+  livekit-agent:
+    build:
+      context: ./livekit-agent
+      dockerfile: Dockerfile
+    container_name: healthcare_livekit_agent
+    environment:
+      - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7800}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-devsecret}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - WHISPER_HOST=${WHISPER_HOST:-whisper}
+      - WHISPER_PORT=${WHISPER_PORT:-9000}
+      - KOKORO_HOST=${KOKORO_HOST:-kokoro}
+      - KOKORO_PORT=${KOKORO_PORT:-8880}
+      - BACKEND_URL=${BACKEND_URL:-http://backend:4000}
+    depends_on:
+      - livekit
+      - whisper
+      - kokoro
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     networks:
       - healthcare_network
 
