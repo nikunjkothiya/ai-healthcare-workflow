@@ -12,4 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Pre-download and cache Silero VAD model files during build to avoid runtime download delays
+RUN python -m livekit.agents download-files
+
 CMD ["python", "agent.py", "start"]

@@ -20,9 +20,10 @@ class LocalWhisperSTT(stt.STT):
     Custom STT plugin that forwards audio buffers to the local Whisper container
     running on port 9000.
     """
-    def __init__(self, host="whisper", port=9000):
+    def __init__(self, host="whisper", port=9000, initial_prompt=None):
         super().__init__(capabilities=stt.STTCapabilities(streaming=False))
         self.url = f"http://{host}:{port}/inference"
+        self.initial_prompt = initial_prompt or "Hello, this is a patient outreach call from Medcare Services regarding appointments, medical scheduling, and check-ins."
 
     async def _recognize_impl(
         self,
@@ -58,7 +59,11 @@ class LocalWhisperSTT(stt.STT):
         
         # Send payload to local whisper endpoint
         files = {"file": ("audio.wav", wav_buf, "audio/wav")}
-        data = {"response_format": "json", "temperature": "0.0"}
+        data = {
+            "response_format": "json",
+            "temperature": "0.0",
+            "initial_prompt": self.initial_prompt
+        }
         
         loop = asyncio.get_event_loop()
         try:
@@ -163,35 +168,37 @@ class KokoroChunkedStream(tts.ChunkedStream):
                     output_emitter.push(silence_bytes)
                     continue
                 
-                # Otherwise, synthesize speech via local Kokoro container using async HTTP
-                logger.info(f"Synthesizing speech via local Kokoro: \"{segment}\"")
-                payload = {
-                    "model": "kokoro",
-                    "input": segment,
-                    "voice": self.tts_ref.voice,
-                    "response_format": "wav",
-                    "speed": 1.0
-                }
-                
-                try:
-                    async with session.post(self.tts_ref.url, json=payload, timeout=15) as response:
-                        if response.status == 200:
-                            audio_bytes = await response.read()
-                            wav_buf = io.BytesIO(audio_bytes)
-                            with wave.open(wav_buf, "rb") as wav_file:
-                                sample_rate = wav_file.getframerate()
-                                num_channels = wav_file.getnchannels()
-                                pcm_data = wav_file.readframes(wav_file.getnframes())
-                            
-                            # Apply the telephone simulation filter
-                            filtered_pcm = apply_telephone_fft_filter(pcm_data, sample_rate)
-                            
-                            logger.info(f"Kokoro TTS Success ({len(filtered_pcm)} pcm bytes, {sample_rate}Hz)")
-                            output_emitter.push(filtered_pcm)
-                        else:
-                            logger.error(f"Kokoro HTTP error: {response.status}")
-                except Exception as e:
-                    logger.error(f"Kokoro TTS HTTP request failed: {e}")
+                # Split segment into sentences for lower latency and better pronunciation flow
+                sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', segment) if s.strip()]
+                for sentence in sentences:
+                    logger.info(f"Synthesizing sentence via local Kokoro: \"{sentence}\"")
+                    payload = {
+                        "model": "kokoro",
+                        "input": sentence,
+                        "voice": self.tts_ref.voice,
+                        "response_format": "wav",
+                        "speed": 1.0
+                    }
+                    
+                    try:
+                        async with session.post(self.tts_ref.url, json=payload, timeout=15) as response:
+                            if response.status == 200:
+                                audio_bytes = await response.read()
+                                wav_buf = io.BytesIO(audio_bytes)
+                                with wave.open(wav_buf, "rb") as wav_file:
+                                    sample_rate = wav_file.getframerate()
+                                    num_channels = wav_file.getnchannels()
+                                    pcm_data = wav_file.readframes(wav_file.getnframes())
+                                
+                                # Apply the telephone simulation filter
+                                filtered_pcm = apply_telephone_fft_filter(pcm_data, sample_rate)
+                                
+                                logger.info(f"Kokoro TTS Success ({len(filtered_pcm)} pcm bytes, {sample_rate}Hz)")
+                                output_emitter.push(filtered_pcm)
+                            else:
+                                logger.error(f"Kokoro HTTP error: {response.status}")
+                    except Exception as e:
+                        logger.error(f"Kokoro TTS HTTP request failed: {e}")
 
 async def entrypoint(ctx: JobContext):
     logger.info(f"LiveKit room detected: {ctx.room.name}. Initializing Voice Agent...")
@@ -218,7 +225,11 @@ async def entrypoint(ctx: JobContext):
         port=int(os.environ.get("KOKORO_PORT", 8880))
     )
     
-    # Instantiate the agent
+    # Retrieve pre-initialized VAD
+    vad_service = ctx.proc.userdata["vad"]
+
+    # Instantiate the agent with tuned endpointing and interruption durations
+    # to match the fast, natural turn-taking dynamics of premium cloud setups.
     agent = Agent(
         instructions=(
             "You are an empathetic, brief, and professional AI outreach assistant calling from Medcare Services.\n"
@@ -230,7 +241,10 @@ async def entrypoint(ctx: JobContext):
         chat_ctx=openai.ChatContext(),
         stt=stt_service,
         llm=llm,
-        tts=tts_service
+        tts=tts_service,
+        vad=vad_service,
+        min_endpointing_delay=0.6,
+        interruption_speech_duration=0.4
     )
     
     # Helper to publish JSON events over WebRTC data channel
@@ -332,5 +346,11 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.error(f"Failed to sync call transcript to backend: {e}")
 
+def prewarm(proc: JobProcess):
+    from livekit.plugins import silero
+    logger.info("Pre-warming Silero VAD model...")
+    proc.userdata["vad"] = silero.VAD.load()
+
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    from livekit.agents import JobProcess
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
