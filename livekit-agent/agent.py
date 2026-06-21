@@ -5,7 +5,7 @@ import json
 import requests
 import wave
 import io
-from livekit.agents import JobContext, WorkerOptions, AutoSubscribe, cli, NOT_GIVEN, NotGivenOr, APIConnectOptions, DEFAULT_API_CONNECT_OPTIONS
+from livekit.agents import JobContext, WorkerOptions, AutoSubscribe, cli, NOT_GIVEN, NotGivenOr, APIConnectOptions, DEFAULT_API_CONNECT_OPTIONS, JobProcess
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import openai
 from livekit.agents import stt, tts
@@ -352,5 +352,4 @@ def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 if __name__ == "__main__":
-    from livekit.agents import JobProcess
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
