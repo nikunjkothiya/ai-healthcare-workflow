@@ -19,17 +19,6 @@ OPENROUTER_MODEL=google/gemma-4-31b-it:free
 OPENROUTER_HTTP_REFERER=http://localhost:3000
 OPENROUTER_APP_TITLE=Care Outreach Assistant
 ```
-
-## LiveKit WebRTC Configuration
-
-Set these in `.env` if connecting to a custom LiveKit deployment:
-
-```bash
-LIVEKIT_URL=ws://localhost:7800
-LIVEKIT_API_KEY=devkey
-LIVEKIT_API_SECRET=devsecret
-```
-
 ## Local Models Still Used
 
 ### STT

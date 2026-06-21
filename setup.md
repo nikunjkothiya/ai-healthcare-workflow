@@ -26,16 +26,6 @@ cp .env.example .env
 
 Review `.env` and adjust if needed. The defaults work out-of-the-box.
 
-### LiveKit & WebRTC Configuration
-The environment variables for LiveKit WebRTC server integration are also configured in `.env` and map seamlessly through Docker:
-```bash
-LIVEKIT_URL=ws://localhost:7800
-LIVEKIT_API_KEY=devkey
-LIVEKIT_API_SECRET=devsecret
-VITE_WS_URL=ws://localhost:4000
-```
-These values can be edited directly in `.env` if you choose to connect to a self-hosted or cloud-based production LiveKit instance.
-
 ---
 
 ## 3. Setting Up AI Models
